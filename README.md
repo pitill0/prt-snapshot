@@ -6,8 +6,8 @@ Snapshots manager for prt-get
 
 
 ## REQUERIMENTS
-  - bash    (http://cnswww.cns.cwru.edu/~chet/bash/bashtop.html)
-  - prt-get (http://jw.smts.ch/files/crux/prt-get_quickstart.html)
+  - bash    (https://tiswww.case.edu/php/chet/bash/bashtop.html)
+  - prt-get (https://git.crux.nu/tools/prt-get)
 
 ## USAGE
 ```
