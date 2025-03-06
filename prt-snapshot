@@ -1,0 +1,175 @@
+#!/bin/bash
+#
+# Copyright (c) 2007-2012
+#   by Victor Martinez, <pitillo@ono.com>
+#   and Jose V Beneyto, <sepen@crux.nu>
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#  
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#  
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+#
+
+msgError() {
+  echo "$APPNAME: Error, $@" 2>&1
+  exit 1
+}
+
+msgVersion() {
+  echo "$APPNAME v$VERSION by Victor Martinez and Jose V Beneyto"
+  exit 0
+}
+
+msgUsage() {
+  echo "Usage: $APPNAME <command> [options]"
+  echo "Where commands are:"
+  echo "  clean         Remove all stored snapshots"
+  echo "  store    msg  Take an snapshot of installed ports"
+  echo "  restore  num  Restore to a status defined by certain snapshot"
+  echo "  diff     num  Return differences between current status and a snapshot"
+  echo "  list          List all stored snapshots"
+  echo "  help          Show this help information"
+  echo "  version       Show version information"
+  exit 0
+}
+
+checkUID() {
+  [ $(id -u) -ne 0 ] && msgError "you must be root to use $APPNAME"
+}
+
+checkVarDir() {
+  [ ! -d $VARDIR ] && msgError "can't access to directory $VARDIR"
+}
+
+checkSnapFile() {
+  [ ! -f $1 ] && msgError "could not read snapshot file $1"
+}
+
+makeSnapshot() {
+  # create a snap file with message passed as argument
+  local num="$1"
+  shift 1
+  local msg="$@"
+  echo "$msg" > $VARDIR/$num.msg
+  prt-get listinst > $VARDIR/$num.snap
+}
+
+diffSnapshot() {
+  # create an temporary snap file to see differences
+  # between current status (snap_ini) and the snap passed as argument (snap_end)
+  local snap_end="$VARDIR/$1.snap"
+  local msg_ini="Temporary snapshot required to use function: diffSnapshot()"
+  local num_ini="$(getSnapshotIndex)"
+  makeSnapshot $num_ini "$msg_ini"
+  local snap_ini="$VARDIR/$num_ini.snap"
+  checkSnapFile $snap_ini
+  checkSnapFile $snap_end
+  #cat $snap1 $snap2 | sort | uniq -u
+  diff $snap_ini $snap_end | grep -e '^>' -e '^<'
+  # delete temporary snapshot
+  rm -f $VARDIR/$(basename $snap_ini .snap).{snap,msg}
+}
+
+getSnapshotIndex() {
+  # return the first index number available (stored snap files + 1)
+  local index="$(find $VARDIR -type f -name '*.snap' | wc -l)"
+  let index++
+  echo $index
+}
+
+cleanSnapshot() {
+  # clean all stored snap files
+  rm -f $VARDIR/*
+}
+
+storeSnapshot() {
+  # store a new snap file with a message
+  local msg="$1"
+  local num="$(getSnapshotIndex)"
+  makeSnapshot $num "$msg"
+}
+
+restoreSnapshot () {
+  # go to a previous status on the system by using a snap
+  local snap="$1"
+  if [ ! -z "$snap" ]; then
+    diffSnapshot $snap | while read symbol port; do
+      [ "$symbol" == "<" ] && prt-get remove $port
+      [ "$symbol" == ">" ] && prt-get install $port
+    done
+    # remove snapshots greater than the one selected to revert on
+    local snaps="$(find $VARDIR -type f -name '*.snap')"
+    for i in ${snaps[@]}; do
+      s="$(basename $i .snap)"
+      [ $s -gt $snap ] && rm -vf $VARDIR/$s.*
+    done
+  fi
+}
+
+listSnapshot() {
+  # return a list of all stored snap files
+  local snaps="$(find $VARDIR -type f -name '*.snap' | sort -u)"
+  for i in ${snaps[@]}; do
+    s="$(basename $i .snap)"
+    t="$(stat -c '%y' $i | cut -d'.' -f1)"
+    echo -ne "$s -- $t -- $(cat $VARDIR/$s.msg | tr '\n' ' ')\n"
+  done
+}
+
+main () {
+  case $1 in
+    clean)
+      cleanSnapshot
+      ;;
+    store)
+      [ $# -ne 2 ] && msgUsage
+      checkUID
+      shift 1
+      storeSnapshot "$@"
+      ;;
+    restore)
+      [ $# -ne 2 ] && msgUsage
+      checkUID
+      restoreSnapshot $2
+      ;;
+    diff)
+      [ $# -ne 2 ] && msgUsage
+      diffSnapshot $2
+      ;;
+    list)
+      listSnapshot
+      ;;
+    version)
+      msgVersion
+      ;;
+    *)
+      msgUsage
+      ;;
+  esac
+}
+
+VERSION=0.3
+APPNAME=$(basename $0)
+
+VARDIR="/var/lib/pkg/snapshots"
+
+[ $# -lt 1 ] && msgUsage
+
+checkVarDir
+
+main "$@"
+
+# End of file

@@ -1,0 +1,50 @@
+.TH prt-snapshot 1 LOCAL
+
+.SH NAME
+
+prt-snapshot - Snapshots manager for prt-get
+
+.SH DESCRIPTION
+
+Make status snapshots of installed packages and manage them with prt-get
+
+.SH SYNOPSIS
+
+.B prt-snapshot
+.RB <command>
+.RB [arguments]
+
+.SH COMMANDS
+
+.TP 13
+.B clean
+Remove all stored snapshots
+.TP 9 
+.B store
+.IR msg
+Take an snapshot of installed ports
+.TP 9
+.B restore
+.IR num
+Restore to a status defined by certain snapshot number
+.TP 9
+.B diff
+.IR num
+Return differences between current status and given snapshot
+.TP 13
+.B list
+List all stored snapshots
+.TP 13
+.B help
+Shows help information
+.TP 13
+.B version
+Shows version information
+
+.SH AUTHORS
+
+Victor Martinez, <pitillo@ono.com>
+.br
+Jose V Beneyo, <sepen@crux.nu>
+
+
