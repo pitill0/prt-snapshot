@@ -6,8 +6,11 @@ Snapshots manager for prt-get
 
 
 ## REQUERIMENTS
+### Software
   - bash    (https://tiswww.case.edu/php/chet/bash/bashtop.html)
   - prt-get (https://git.crux.nu/tools/prt-get)
+### Work directory
+  ```sudo mkdir -p /var/lib/pkg/snapshots```
 
 ## USAGE
 ```
