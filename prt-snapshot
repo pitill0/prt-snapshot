@@ -23,6 +23,13 @@
 # THE SOFTWARE.
 #
 
+
+# Run privileged operations with a predictable environment. Snapshot state is
+# root-managed and should not be created with permissive file modes.
+PATH="/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
+umask 077
+
 msgError() {
   echo "$APPNAME: Error, $*" >&2
   exit 1
@@ -51,7 +58,72 @@ checkUID() {
 }
 
 checkVarDir() {
-  [ ! -d "$VARDIR" ] && msgError "can't access to directory $VARDIR"
+  local owner
+  local mode
+
+  [ -L "$VARDIR" ] && msgError "snapshot directory must not be a symbolic link"
+  [ -d "$VARDIR" ] || msgError "can't access to directory $VARDIR"
+
+  owner="$(stat -c '%u' "$VARDIR")" ||
+    msgError "could not determine snapshot directory owner"
+  [ "$owner" -eq 0 ] ||
+    msgError "snapshot directory must be owned by root"
+
+  mode="$(stat -c '%a' "$VARDIR")" ||
+    msgError "could not determine snapshot directory permissions"
+
+  if (( (8#$mode & 0022) != 0 )); then
+    msgError "snapshot directory must not be writable by group or others"
+  fi
+}
+
+releaseLock() {
+  [ "${LOCK_HELD:-0}" -eq 1 ] || return 0
+
+  rm -f -- "$LOCKDIR/pid"
+  rmdir -- "$LOCKDIR" 2>/dev/null || true
+  LOCK_HELD=0
+}
+
+acquireLock() {
+  local lock_pid=""
+
+  if mkdir -- "$LOCKDIR" 2>/dev/null; then
+    if ! printf '%s\n' "$$" > "$LOCKDIR/pid"; then
+      rmdir -- "$LOCKDIR" 2>/dev/null || true
+      msgError "could not initialize snapshot lock"
+    fi
+    LOCK_HELD=1
+    return 0
+  fi
+
+  # A lock left behind by an uncatchable termination may be recovered only
+  # when it contains a valid PID that is no longer running.
+  if [ -f "$LOCKDIR/pid" ]; then
+    read -r lock_pid < "$LOCKDIR/pid" || lock_pid=""
+
+    if [[ "$lock_pid" =~ ^[0-9]+$ ]] && kill -0 "$lock_pid" 2>/dev/null; then
+      msgError "another $APPNAME operation is already running (pid $lock_pid)"
+    fi
+
+    if [[ "$lock_pid" =~ ^[0-9]+$ ]]; then
+      rm -f -- "$LOCKDIR/pid"
+      if ! rmdir -- "$LOCKDIR" 2>/dev/null; then
+        msgError "could not remove stale snapshot lock"
+      fi
+
+      if mkdir -- "$LOCKDIR" 2>/dev/null; then
+        if ! printf '%s\n' "$$" > "$LOCKDIR/pid"; then
+          rmdir -- "$LOCKDIR" 2>/dev/null || true
+          msgError "could not initialize snapshot lock"
+        fi
+        LOCK_HELD=1
+        return 0
+      fi
+    fi
+  fi
+
+  msgError "snapshot store is locked or contains an invalid stale lock"
 }
 
 validateSnapshotId() {
@@ -76,6 +148,7 @@ validatePortName() {
 cleanupTempFiles() {
   [ -n "${TEMP_FILE:-}" ] && rm -f -- "$TEMP_FILE"
   [ -n "${RESTORE_FILE:-}" ] && rm -f -- "$RESTORE_FILE"
+  releaseLock
 }
 
 captureCurrentState() {
@@ -278,25 +351,37 @@ main() {
   case "$1" in
     clean)
       checkUID
+      acquireLock
       cleanSnapshot
+      releaseLock
       ;;
     store)
       [ "$#" -ne 2 ] && msgUsage
       checkUID
+      acquireLock
       shift
       storeSnapshot "$@"
+      releaseLock
       ;;
     restore)
       [ "$#" -ne 2 ] && msgUsage
       checkUID
+      acquireLock
       restoreSnapshot "$2"
+      releaseLock
       ;;
     diff)
       [ "$#" -ne 2 ] && msgUsage
+      checkUID
+      acquireLock
       diffSnapshot "$2"
+      releaseLock
       ;;
     list)
+      checkUID
+      acquireLock
       listSnapshot
+      releaseLock
       ;;
     version)
       msgVersion
@@ -311,6 +396,8 @@ VERSION=0.4
 APPNAME="$(basename "$0")"
 
 VARDIR="/var/lib/pkg/snapshots"
+LOCKDIR="$VARDIR/.lock"
+LOCK_HELD=0
 TEMP_FILE=""
 RESTORE_FILE=""
 
