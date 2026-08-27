@@ -305,7 +305,58 @@ test_noninteractive_restore_requires_opt_in() {
   fi
 }
 
-say "1..10"
+# 11. show must expose snapshot metadata and package membership.
+test_show_snapshot_details() {
+  new_sandbox
+  printf 'alpha\nbeta\n' > "$TEST_ROOT/store/3.snap"
+  printf 'before test\nsecond line\n' > "$TEST_ROOT/store/3.msg"
+
+  if run_prt show 3 >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     grep -Fxq 'Snapshot: 3' "$TEST_ROOT/out" &&
+     grep -Fq 'Created: ' "$TEST_ROOT/out" &&
+     grep -Fxq 'Message: before test second line ' "$TEST_ROOT/out" &&
+     grep -Fxq 'Packages (2):' "$TEST_ROOT/out" &&
+     grep -Fxq '  alpha' "$TEST_ROOT/out" &&
+     grep -Fxq '  beta' "$TEST_ROOT/out" &&
+     [ ! -s "$TEST_ROOT/log" ]; then
+    pass "show displays snapshot metadata and packages"
+  else
+    fail "show displays snapshot metadata and packages"
+  fi
+}
+
+# 12. --packages must emit only validated package names.
+test_show_packages_only() {
+  new_sandbox
+  printf 'alpha\nbeta\n' > "$TEST_ROOT/store/4.snap"
+  printf 'message\n' > "$TEST_ROOT/store/4.msg"
+
+  if run_prt show 4 --packages >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     printf 'alpha\nbeta\n' | cmp -s - "$TEST_ROOT/out" &&
+     [ ! -s "$TEST_ROOT/log" ]; then
+    pass "show --packages emits only package names"
+  else
+    fail "show --packages emits only package names"
+  fi
+}
+
+# 13. show must reject corrupt snapshot package data before output.
+test_show_rejects_invalid_package_data() {
+  new_sandbox
+  printf 'alpha\nbad/name\n' > "$TEST_ROOT/store/5.snap"
+  printf 'corrupt\n' > "$TEST_ROOT/store/5.msg"
+
+  if ! run_prt show 5 >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     grep -Fq 'invalid port name' "$TEST_ROOT/err" &&
+     [ ! -s "$TEST_ROOT/out" ] &&
+     [ ! -s "$TEST_ROOT/log" ]; then
+    pass "show validates snapshot data before producing output"
+  else
+    fail "show validates snapshot data before producing output"
+  fi
+}
+
+say "1..13"
 test_gap_does_not_overwrite
 test_invalid_snapshot_id
 test_invalid_port_name
@@ -316,6 +367,9 @@ test_failed_restore_cleans_temporary_state
 test_clean_only_removes_snapshot_namespace
 test_restore_dry_run_is_read_only
 test_noninteractive_restore_requires_opt_in
+test_show_snapshot_details
+test_show_packages_only
+test_show_rejects_invalid_package_data
 
 say ""
 say "$PASS passed, $FAIL failed"
