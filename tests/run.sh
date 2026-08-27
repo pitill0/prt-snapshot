@@ -61,6 +61,27 @@ case "${1:-}" in
   listinst)
     cat "$STATE"
     ;;
+  quickdep)
+    port="${2:-}"
+    if [ "${PRT_TEST_FAIL_QUICKDEP:-}" = "$port" ]; then
+      exit 44
+    fi
+
+    case "$port" in
+      app)
+        printf 'lib app\n'
+        ;;
+      lib)
+        printf 'lib\n'
+        ;;
+      foreign-app)
+        printf 'outside foreign-app\n'
+        ;;
+      *)
+        printf '%s\n' "$port"
+        ;;
+    esac
+    ;;
   remove)
     port="${2:-}"
     printf 'remove %s\n' "$port" >> "$LOG"
@@ -93,7 +114,7 @@ MOCK
   : > "$TEST_ROOT/log"
   export PRT_TEST_STATE="$TEST_ROOT/state"
   export PRT_TEST_LOG="$TEST_ROOT/log"
-  unset PRT_TEST_FAIL_REMOVE PRT_TEST_FAIL_INSTALL
+  unset PRT_TEST_FAIL_REMOVE PRT_TEST_FAIL_INSTALL PRT_TEST_FAIL_QUICKDEP
 }
 
 run_prt() {
@@ -237,7 +258,7 @@ test_failed_restore_cleans_temporary_state() {
   run_prt restore 1 --yes >/dev/null 2>&1 || true
 
   if [ ! -e "$TEST_ROOT/store/.lock" ] &&
-     ! find "$TEST_ROOT/store" -maxdepth 1 -type f \( -name '.current.*' -o -name '.restore.*' -o -name '.snapshot.*' -o -name '.message.*' \) | grep -q .; then
+     ! find "$TEST_ROOT/store" -maxdepth 1 -type f \( -name '.current.*' -o -name '.restore.*' -o -name '.install.*' -o -name '.snapshot.*' -o -name '.message.*' \) | grep -q .; then
     pass "failed restore cleans temporary files and lock"
   else
     fail "failed restore cleans temporary files and lock"
@@ -356,7 +377,62 @@ test_show_rejects_invalid_package_data() {
   fi
 }
 
-say "1..13"
+# 14. Missing packages must be installed in dependency order.
+test_restore_orders_target_dependencies() {
+  new_sandbox
+  printf 'base\n' > "$TEST_ROOT/state"
+  printf 'app\nbase\nlib\n' > "$TEST_ROOT/store/1.snap"
+  printf 'target\n' > "$TEST_ROOT/store/1.msg"
+
+  if run_prt restore 1 --yes >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     printf 'install lib\ninstall app\n' | cmp -s - "$TEST_ROOT/log" &&
+     grep -Fxq 'lib' "$TEST_ROOT/state" &&
+     grep -Fxq 'app' "$TEST_ROOT/state"; then
+    pass "restore installs target packages in dependency order"
+  else
+    fail "restore installs target packages in dependency order"
+  fi
+}
+
+# 15. Dependencies outside the target snapshot must never be installed.
+test_restore_does_not_expand_membership() {
+  new_sandbox
+  printf 'base\n' > "$TEST_ROOT/state"
+  printf 'base\nforeign-app\n' > "$TEST_ROOT/store/1.snap"
+  printf 'target\n' > "$TEST_ROOT/store/1.msg"
+
+  if run_prt restore 1 --yes >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     assert_contains "$TEST_ROOT/log" 'install foreign-app' &&
+     assert_not_contains "$TEST_ROOT/log" 'install outside' &&
+     ! grep -Fxq 'outside' "$TEST_ROOT/state"; then
+    pass "restore dependency ordering never expands snapshot membership"
+  else
+    fail "restore dependency ordering never expands snapshot membership"
+  fi
+}
+
+# 16. Dependency-order resolution failure must happen before any mutation.
+test_quickdep_failure_precedes_mutation() {
+  new_sandbox
+  printf 'base\nextra\n' > "$TEST_ROOT/state"
+  printf 'app\nbase\nlib\n' > "$TEST_ROOT/store/1.snap"
+  printf 'target\n' > "$TEST_ROOT/store/1.msg"
+  printf 'base\nextra\n' > "$TEST_ROOT/store/2.snap"
+  printf 'later\n' > "$TEST_ROOT/store/2.msg"
+  export PRT_TEST_FAIL_QUICKDEP='app'
+
+  if ! run_prt restore 1 --yes >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     grep -Fq 'could not resolve dependency order' "$TEST_ROOT/err" &&
+     [ ! -s "$TEST_ROOT/log" ] &&
+     grep -Fxq 'extra' "$TEST_ROOT/state" &&
+     assert_file "$TEST_ROOT/store/2.snap"; then
+    pass "dependency resolution failure aborts before mutation"
+  else
+    fail "dependency resolution failure aborts before mutation"
+  fi
+}
+
+say "1..16"
 test_gap_does_not_overwrite
 test_invalid_snapshot_id
 test_invalid_port_name
@@ -370,6 +446,9 @@ test_noninteractive_restore_requires_opt_in
 test_show_snapshot_details
 test_show_packages_only
 test_show_rejects_invalid_package_data
+test_restore_orders_target_dependencies
+test_restore_does_not_expand_membership
+test_quickdep_failure_precedes_mutation
 
 say ""
 say "$PASS passed, $FAIL failed"
