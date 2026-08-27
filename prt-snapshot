@@ -151,6 +151,7 @@ validatePortName() {
 cleanupTempFiles() {
   [ -n "${TEMP_FILE:-}" ] && rm -f -- "$TEMP_FILE"
   [ -n "${RESTORE_FILE:-}" ] && rm -f -- "$RESTORE_FILE"
+  [ -n "${INSTALL_FILE:-}" ] && rm -f -- "$INSTALL_FILE"
   releaseLock
 }
 
@@ -296,6 +297,50 @@ validateRestorePlan() {
   done < "$RESTORE_FILE"
 }
 
+buildInstallOrder() {
+  local symbol
+  local port
+  local dep
+  local deps
+  declare -A missing=()
+  declare -A added=()
+
+  INSTALL_FILE="$(mktemp "$VARDIR/.install.XXXXXX")" ||
+    msgError "could not create temporary install-order file"
+
+  while read -r symbol port; do
+    [ "$symbol" = ">" ] || continue
+    missing["$port"]=1
+  done < "$RESTORE_FILE"
+
+  while read -r symbol port; do
+    [ "$symbol" = ">" ] || continue
+
+    if ! deps="$(prt-get quickdep "$port")"; then
+      msgError "could not resolve dependency order for port: $port"
+    fi
+
+    for dep in $deps; do
+      validatePortName "$dep"
+
+      # quickdep may expose dependencies introduced by the current ports tree.
+      # Use those results only to order packages already present in the target
+      # snapshot; never expand restore membership.
+      if [ "${missing[$dep]:-0}" -eq 1 ] &&
+         [ "${added[$dep]:-0}" -eq 0 ]; then
+        printf '%s\n' "$dep" >> "$INSTALL_FILE"
+        added["$dep"]=1
+      fi
+    done
+
+    # Be defensive if a quickdep implementation omits the requested port.
+    if [ "${added[$port]:-0}" -eq 0 ]; then
+      printf '%s\n' "$port" >> "$INSTALL_FILE"
+      added["$port"]=1
+    fi
+  done < "$RESTORE_FILE"
+}
+
 printRestorePlan() {
   local snap="$1"
   local symbol
@@ -317,9 +362,9 @@ printRestorePlan() {
   done < "$RESTORE_FILE"
 
   printf '  Install (%d):\n' "$install_count"
-  while read -r symbol port; do
-    [ "$symbol" = ">" ] && printf '    %s\n' "$port"
-  done < "$RESTORE_FILE"
+  while IFS= read -r port; do
+    printf '    %s\n' "$port"
+  done < "$INSTALL_FILE"
 }
 
 confirmRestore() {
@@ -346,20 +391,21 @@ applyRestorePlan() {
   local symbol
   local port
 
+  # Removal membership comes directly from the validated restore diff.
   while read -r symbol port; do
-    case "$symbol" in
-      "<")
-        if ! prt-get remove "$port"; then
-          msgError "failed to remove port: $port"
-        fi
-        ;;
-      ">")
-        if ! prt-get install "$port"; then
-          msgError "failed to install port: $port"
-        fi
-        ;;
-    esac
+    [ "$symbol" = "<" ] || continue
+
+    if ! prt-get remove "$port"; then
+      msgError "failed to remove port: $port"
+    fi
   done < "$RESTORE_FILE"
+
+  # Install only target-snapshot members, in quickdep-derived order.
+  while IFS= read -r port; do
+    if ! prt-get install "$port"; then
+      msgError "failed to install port: $port"
+    fi
+  done < "$INSTALL_FILE"
 }
 
 pruneSnapshotHistory() {
@@ -394,25 +440,29 @@ restoreSnapshot() {
   fi
 
   validateRestorePlan
+  buildInstallOrder
   printRestorePlan "$snap"
 
   if [ "$mode" = "dry-run" ]; then
-    rm -f -- "$RESTORE_FILE"
+    rm -f -- "$RESTORE_FILE" "$INSTALL_FILE"
     RESTORE_FILE=""
+    INSTALL_FILE=""
     return 0
   fi
 
   if [ "$mode" = "prompt" ] && ! confirmRestore; then
-    rm -f -- "$RESTORE_FILE"
+    rm -f -- "$RESTORE_FILE" "$INSTALL_FILE"
     RESTORE_FILE=""
+    INSTALL_FILE=""
     printf 'Restore cancelled.\n'
     return 0
   fi
 
   applyRestorePlan
 
-  rm -f -- "$RESTORE_FILE"
+  rm -f -- "$RESTORE_FILE" "$INSTALL_FILE"
   RESTORE_FILE=""
+  INSTALL_FILE=""
 
   # Only a successful, applied restore may prune newer snapshot history.
   pruneSnapshotHistory "$snap"
@@ -581,6 +631,7 @@ LOCKDIR="$VARDIR/.lock"
 LOCK_HELD=0
 TEMP_FILE=""
 RESTORE_FILE=""
+INSTALL_FILE=""
 
 trap cleanupTempFiles EXIT INT TERM
 
