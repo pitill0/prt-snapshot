@@ -41,6 +41,8 @@ msgVersion() {
 }
 
 msgUsage() {
+  local status="${1:-0}"
+
   echo "Usage: $APPNAME <command> [options]"
   echo "Where commands are:"
   echo "  clean         Remove all stored snapshots"
@@ -53,7 +55,7 @@ msgUsage() {
   echo "  list          List all stored snapshots"
   echo "  help          Show this help information"
   echo "  version       Show version information"
-  exit 0
+  exit "$status"
 }
 
 checkUID() {
@@ -544,21 +546,23 @@ main() {
   case "$1" in
     clean)
       checkUID
+      checkVarDir
       acquireLock
       cleanSnapshot
       releaseLock
       ;;
     store)
-      [ "$#" -ne 2 ] && msgUsage
+      [ "$#" -ne 2 ] && msgUsage 1
       checkUID
+      checkVarDir
       acquireLock
       shift
       storeSnapshot "$@"
       releaseLock
       ;;
     restore)
-      [ "$#" -lt 2 ] && msgUsage
-      [ "$#" -gt 3 ] && msgUsage
+      [ "$#" -lt 2 ] && msgUsage 1
+      [ "$#" -gt 3 ] && msgUsage 1
 
       case "${3:-}" in
         "")
@@ -571,25 +575,27 @@ main() {
           restore_mode="yes"
           ;;
         *)
-          msgUsage
+          msgUsage 1
           ;;
       esac
 
       checkUID
+      checkVarDir
       acquireLock
       restoreSnapshot "$2" "$restore_mode"
       releaseLock
       ;;
     diff)
-      [ "$#" -ne 2 ] && msgUsage
+      [ "$#" -ne 2 ] && msgUsage 1
       checkUID
+      checkVarDir
       acquireLock
       diffSnapshot "$2"
       releaseLock
       ;;
     show)
-      [ "$#" -lt 2 ] && msgUsage
-      [ "$#" -gt 3 ] && msgUsage
+      [ "$#" -lt 2 ] && msgUsage 1
+      [ "$#" -gt 3 ] && msgUsage 1
 
       case "${3:-}" in
         "")
@@ -599,26 +605,31 @@ main() {
           show_mode="packages"
           ;;
         *)
-          msgUsage
+          msgUsage 1
           ;;
       esac
 
       checkUID
+      checkVarDir
       acquireLock
       showSnapshot "$2" "$show_mode"
       releaseLock
       ;;
     list)
       checkUID
+      checkVarDir
       acquireLock
       listSnapshot
       releaseLock
+      ;;
+    help)
+      msgUsage
       ;;
     version)
       msgVersion
       ;;
     *)
-      msgUsage
+      msgUsage 1
       ;;
   esac
 }
@@ -635,9 +646,7 @@ INSTALL_FILE=""
 
 trap cleanupTempFiles EXIT INT TERM
 
-[ "$#" -lt 1 ] && msgUsage
-
-checkVarDir
+[ "$#" -lt 1 ] && msgUsage 1
 
 main "$@"
 

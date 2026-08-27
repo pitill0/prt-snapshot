@@ -432,7 +432,58 @@ test_quickdep_failure_precedes_mutation() {
   fi
 }
 
-say "1..16"
+# 17. Informational commands must work before the snapshot store exists.
+test_help_and_version_without_store() {
+  new_sandbox
+  rm -rf -- "$TEST_ROOT/store"
+
+  if run_prt help >"$TEST_ROOT/help.out" 2>"$TEST_ROOT/help.err" &&
+     run_prt version >"$TEST_ROOT/version.out" 2>"$TEST_ROOT/version.err" &&
+     grep -Fq 'Usage:' "$TEST_ROOT/help.out" &&
+     grep -Fq 'v0.5' "$TEST_ROOT/version.out"; then
+    pass "help and version do not require an initialized snapshot store"
+  else
+    fail "help and version do not require an initialized snapshot store"
+  fi
+}
+
+# 18. Invalid commands and options must return a failing exit status.
+test_invalid_cli_returns_failure() {
+  new_sandbox
+
+  if ! run_prt nonsense >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     grep -Fq 'Usage:' "$TEST_ROOT/out" &&
+     ! run_prt show 1 --invalid >"$TEST_ROOT/out2" 2>"$TEST_ROOT/err2"; then
+    pass "invalid CLI usage returns non-zero"
+  else
+    fail "invalid CLI usage returns non-zero"
+  fi
+}
+
+# 19. dry-run must display the same dependency-aware install order.
+test_dry_run_shows_dependency_order() {
+  new_sandbox
+  printf 'base\n' > "$TEST_ROOT/state"
+  printf 'app\nbase\nlib\n' > "$TEST_ROOT/store/1.snap"
+  printf 'target\n' > "$TEST_ROOT/store/1.msg"
+
+  if run_prt restore 1 --dry-run >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     [ ! -s "$TEST_ROOT/log" ] &&
+     awk '
+       /^  Install \(2\):$/ {in_install=1; next}
+       in_install && /^    / {
+         sub(/^    /, "")
+         print
+       }
+     ' "$TEST_ROOT/out" > "$TEST_ROOT/install-order" &&
+     printf 'lib\napp\n' | cmp -s - "$TEST_ROOT/install-order"; then
+    pass "dry-run displays dependency-aware install order"
+  else
+    fail "dry-run displays dependency-aware install order"
+  fi
+}
+
+say "1..19"
 test_gap_does_not_overwrite
 test_invalid_snapshot_id
 test_invalid_port_name
@@ -449,6 +500,9 @@ test_show_rejects_invalid_package_data
 test_restore_orders_target_dependencies
 test_restore_does_not_expand_membership
 test_quickdep_failure_precedes_mutation
+test_help_and_version_without_store
+test_invalid_cli_returns_failure
+test_dry_run_shows_dependency_order
 
 say ""
 say "$PASS passed, $FAIL failed"
