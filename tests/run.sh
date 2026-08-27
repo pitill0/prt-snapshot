@@ -148,20 +148,21 @@ test_invalid_snapshot_id() {
   fi
 }
 
-# 3. Snapshot data must be validated before becoming a prt-get argument.
+# 3. The complete restore plan must be validated before any prt-get mutation.
 test_invalid_port_name() {
   new_sandbox
-  printf 'base\n' > "$TEST_ROOT/state"
+  printf 'base\nextra\n' > "$TEST_ROOT/state"
   printf 'base\nbad/name\n' > "$TEST_ROOT/store/1.snap"
   printf 'malicious\n' > "$TEST_ROOT/store/1.msg"
 
-  if ! run_prt restore 1 >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+  if ! run_prt restore 1 --yes >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
      grep -Fq 'invalid port name' "$TEST_ROOT/err" &&
      [ ! -s "$TEST_ROOT/log" ] &&
+     grep -Fxq 'extra' "$TEST_ROOT/state" &&
      assert_file "$TEST_ROOT/store/1.snap"; then
-    pass "restore rejects invalid package names before prt-get"
+    pass "restore validates the complete plan before prt-get"
   else
-    fail "restore rejects invalid package names before prt-get"
+    fail "restore validates the complete plan before prt-get"
   fi
 }
 
@@ -175,7 +176,7 @@ test_failed_remove_preserves_history() {
   printf 'later\n' > "$TEST_ROOT/store/2.msg"
   export PRT_TEST_FAIL_REMOVE='extra'
 
-  if ! run_prt restore 1 >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+  if ! run_prt restore 1 --yes >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
      assert_contains "$TEST_ROOT/log" 'remove extra' &&
      assert_file "$TEST_ROOT/store/2.snap" &&
      assert_file "$TEST_ROOT/store/2.msg"; then
@@ -195,7 +196,7 @@ test_failed_install_preserves_history() {
   printf 'later\n' > "$TEST_ROOT/store/2.msg"
   export PRT_TEST_FAIL_INSTALL='missing'
 
-  if ! run_prt restore 1 >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+  if ! run_prt restore 1 --yes >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
      assert_contains "$TEST_ROOT/log" 'install missing' &&
      assert_file "$TEST_ROOT/store/2.snap" &&
      assert_file "$TEST_ROOT/store/2.msg"; then
@@ -214,7 +215,7 @@ test_successful_restore_prunes_newer_history() {
   printf 'base\nextra\n' > "$TEST_ROOT/store/2.snap"
   printf 'later\n' > "$TEST_ROOT/store/2.msg"
 
-  if run_prt restore 1 >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+  if run_prt restore 1 --yes >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
      grep -Fxq 'base' "$TEST_ROOT/state" &&
      assert_file "$TEST_ROOT/store/1.snap" &&
      assert_not_file "$TEST_ROOT/store/2.snap" &&
@@ -233,7 +234,7 @@ test_failed_restore_cleans_temporary_state() {
   printf 'base\n' > "$TEST_ROOT/store/1.msg"
   export PRT_TEST_FAIL_REMOVE='extra'
 
-  run_prt restore 1 >/dev/null 2>&1 || true
+  run_prt restore 1 --yes >/dev/null 2>&1 || true
 
   if [ ! -e "$TEST_ROOT/store/.lock" ] &&
      ! find "$TEST_ROOT/store" -maxdepth 1 -type f \( -name '.current.*' -o -name '.restore.*' -o -name '.snapshot.*' -o -name '.message.*' \) | grep -q .; then
@@ -262,7 +263,49 @@ test_clean_only_removes_snapshot_namespace() {
   fi
 }
 
-say "1..8"
+# 9. dry-run must show the plan without mutating packages or snapshot history.
+test_restore_dry_run_is_read_only() {
+  new_sandbox
+  printf 'base\nextra\n' > "$TEST_ROOT/state"
+  printf 'base\n' > "$TEST_ROOT/store/1.snap"
+  printf 'base\n' > "$TEST_ROOT/store/1.msg"
+  printf 'base\nextra\n' > "$TEST_ROOT/store/2.snap"
+  printf 'later\n' > "$TEST_ROOT/store/2.msg"
+
+  if run_prt restore 1 --dry-run >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     grep -Fq 'Restore plan for snapshot 1' "$TEST_ROOT/out" &&
+     grep -Fq 'Remove (1):' "$TEST_ROOT/out" &&
+     grep -Fq 'extra' "$TEST_ROOT/out" &&
+     [ ! -s "$TEST_ROOT/log" ] &&
+     grep -Fxq 'extra' "$TEST_ROOT/state" &&
+     assert_file "$TEST_ROOT/store/2.snap"; then
+    pass "restore --dry-run shows the plan without mutating state"
+  else
+    fail "restore --dry-run shows the plan without mutating state"
+  fi
+}
+
+# 10. Non-interactive restore must require explicit --yes or --dry-run.
+test_noninteractive_restore_requires_opt_in() {
+  new_sandbox
+  printf 'base\nextra\n' > "$TEST_ROOT/state"
+  printf 'base\n' > "$TEST_ROOT/store/1.snap"
+  printf 'base\n' > "$TEST_ROOT/store/1.msg"
+  printf 'base\nextra\n' > "$TEST_ROOT/store/2.snap"
+  printf 'later\n' > "$TEST_ROOT/store/2.msg"
+
+  if ! run_prt restore 1 </dev/null >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     grep -Fq 'restore requires confirmation' "$TEST_ROOT/err" &&
+     [ ! -s "$TEST_ROOT/log" ] &&
+     grep -Fxq 'extra' "$TEST_ROOT/state" &&
+     assert_file "$TEST_ROOT/store/2.snap"; then
+    pass "non-interactive restore requires explicit opt-in"
+  else
+    fail "non-interactive restore requires explicit opt-in"
+  fi
+}
+
+say "1..10"
 test_gap_does_not_overwrite
 test_invalid_snapshot_id
 test_invalid_port_name
@@ -271,6 +314,8 @@ test_failed_install_preserves_history
 test_successful_restore_prunes_newer_history
 test_failed_restore_cleans_temporary_state
 test_clean_only_removes_snapshot_namespace
+test_restore_dry_run_is_read_only
+test_noninteractive_restore_requires_opt_in
 
 say ""
 say "$PASS passed, $FAIL failed"
