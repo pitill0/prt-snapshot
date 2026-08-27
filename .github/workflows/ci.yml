@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  shell:
+    name: Shell safety checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Bash syntax
+        run: |
+          bash -n prt-snapshot
+          bash -n tests/run.sh
+
+      - name: ShellCheck
+        run: shellcheck prt-snapshot tests/run.sh
+
+      - name: Safety regression tests
+        run: sudo ./tests/run.sh

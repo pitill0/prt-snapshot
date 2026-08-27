@@ -1,0 +1,277 @@
+#!/bin/bash
+
+set -u
+
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+SOURCE="$ROOT_DIR/prt-snapshot"
+TEST_ROOT=""
+PASS=0
+FAIL=0
+
+say() {
+  printf '%s\n' "$*"
+}
+
+pass() {
+  PASS=$((PASS + 1))
+  printf 'ok - %s\n' "$1"
+}
+
+fail() {
+  FAIL=$((FAIL + 1))
+  printf 'not ok - %s\n' "$1"
+}
+
+cleanup() {
+  [ -n "$TEST_ROOT" ] && rm -rf -- "$TEST_ROOT"
+}
+
+trap cleanup EXIT INT TERM
+
+[ "$(id -u)" -eq 0 ] || {
+  say "tests must run as root so production ownership checks remain active"
+  say "try: sudo ./tests/run.sh"
+  exit 1
+}
+
+new_sandbox() {
+  cleanup
+  TEST_ROOT="$(mktemp -d /tmp/prt-snapshot-tests.XXXXXX)" || exit 1
+  mkdir -p "$TEST_ROOT/bin" "$TEST_ROOT/store"
+  chmod 0755 "$TEST_ROOT/store"
+
+  cp "$SOURCE" "$TEST_ROOT/prt-snapshot"
+  chmod 0755 "$TEST_ROOT/prt-snapshot"
+
+  # Redirect only the production constants. All normal system utilities remain
+  # available after the fake prt-get directory in PATH.
+  sed -i \
+    -e "s|^PATH=.*|PATH=\"$TEST_ROOT/bin:/usr/sbin:/usr/bin:/sbin:/bin\"|" \
+    -e "s|^VARDIR=.*|VARDIR=\"$TEST_ROOT/store\"|" \
+    "$TEST_ROOT/prt-snapshot"
+
+  cat > "$TEST_ROOT/bin/prt-get" <<'MOCK'
+#!/bin/bash
+set -u
+
+STATE="${PRT_TEST_STATE:?}"
+LOG="${PRT_TEST_LOG:?}"
+
+case "${1:-}" in
+  listinst)
+    cat "$STATE"
+    ;;
+  remove)
+    port="${2:-}"
+    printf 'remove %s\n' "$port" >> "$LOG"
+    if [ "${PRT_TEST_FAIL_REMOVE:-}" = "$port" ]; then
+      exit 42
+    fi
+    grep -Fvx -- "$port" "$STATE" > "$STATE.tmp" || true
+    mv "$STATE.tmp" "$STATE"
+    ;;
+  install)
+    port="${2:-}"
+    printf 'install %s\n' "$port" >> "$LOG"
+    if [ "${PRT_TEST_FAIL_INSTALL:-}" = "$port" ]; then
+      exit 43
+    fi
+    if ! grep -Fxq -- "$port" "$STATE"; then
+      printf '%s\n' "$port" >> "$STATE"
+      sort -o "$STATE" "$STATE"
+    fi
+    ;;
+  *)
+    printf 'unexpected prt-get command: %s\n' "$*" >&2
+    exit 99
+    ;;
+esac
+MOCK
+  chmod 0755 "$TEST_ROOT/bin/prt-get"
+
+  : > "$TEST_ROOT/state"
+  : > "$TEST_ROOT/log"
+  export PRT_TEST_STATE="$TEST_ROOT/state"
+  export PRT_TEST_LOG="$TEST_ROOT/log"
+  unset PRT_TEST_FAIL_REMOVE PRT_TEST_FAIL_INSTALL
+}
+
+run_prt() {
+  "$TEST_ROOT/prt-snapshot" "$@"
+}
+
+assert_file() {
+  [ -f "$1" ]
+}
+
+assert_not_file() {
+  [ ! -e "$1" ]
+}
+
+assert_contains() {
+  grep -Fq -- "$2" "$1"
+}
+
+assert_not_contains() {
+  ! grep -Fq -- "$2" "$1"
+}
+
+# 1. Snapshot numbering must use max(id)+1, never count+1.
+test_gap_does_not_overwrite() {
+  new_sandbox
+  printf 'base\n' > "$TEST_ROOT/state"
+  printf 'old-one\n' > "$TEST_ROOT/store/1.snap"
+  printf 'one\n' > "$TEST_ROOT/store/1.msg"
+  printf 'old-three\n' > "$TEST_ROOT/store/3.snap"
+  printf 'three\n' > "$TEST_ROOT/store/3.msg"
+
+  if run_prt store "after gap" >/dev/null 2>&1 &&
+     assert_file "$TEST_ROOT/store/4.snap" &&
+     grep -Fxq 'old-three' "$TEST_ROOT/store/3.snap"; then
+    pass "store uses max snapshot id + 1 and preserves existing snapshots"
+  else
+    fail "store uses max snapshot id + 1 and preserves existing snapshots"
+  fi
+}
+
+# 2. User-controlled snapshot IDs must never escape the store namespace.
+test_invalid_snapshot_id() {
+  new_sandbox
+  printf 'base\n' > "$TEST_ROOT/state"
+
+  if ! run_prt restore '../1' >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     grep -Fq 'invalid snapshot id' "$TEST_ROOT/err" &&
+     [ ! -s "$TEST_ROOT/log" ]; then
+    pass "restore rejects non-numeric snapshot ids before prt-get"
+  else
+    fail "restore rejects non-numeric snapshot ids before prt-get"
+  fi
+}
+
+# 3. Snapshot data must be validated before becoming a prt-get argument.
+test_invalid_port_name() {
+  new_sandbox
+  printf 'base\n' > "$TEST_ROOT/state"
+  printf 'base\nbad/name\n' > "$TEST_ROOT/store/1.snap"
+  printf 'malicious\n' > "$TEST_ROOT/store/1.msg"
+
+  if ! run_prt restore 1 >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     grep -Fq 'invalid port name' "$TEST_ROOT/err" &&
+     [ ! -s "$TEST_ROOT/log" ] &&
+     assert_file "$TEST_ROOT/store/1.snap"; then
+    pass "restore rejects invalid package names before prt-get"
+  else
+    fail "restore rejects invalid package names before prt-get"
+  fi
+}
+
+# 4. Failed removals must abort and preserve newer snapshot history.
+test_failed_remove_preserves_history() {
+  new_sandbox
+  printf 'base\nextra\n' > "$TEST_ROOT/state"
+  printf 'base\n' > "$TEST_ROOT/store/1.snap"
+  printf 'base\n' > "$TEST_ROOT/store/1.msg"
+  printf 'base\nextra\n' > "$TEST_ROOT/store/2.snap"
+  printf 'later\n' > "$TEST_ROOT/store/2.msg"
+  export PRT_TEST_FAIL_REMOVE='extra'
+
+  if ! run_prt restore 1 >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     assert_contains "$TEST_ROOT/log" 'remove extra' &&
+     assert_file "$TEST_ROOT/store/2.snap" &&
+     assert_file "$TEST_ROOT/store/2.msg"; then
+    pass "failed remove aborts restore without pruning newer snapshots"
+  else
+    fail "failed remove aborts restore without pruning newer snapshots"
+  fi
+}
+
+# 5. Failed installs must abort and preserve newer snapshot history.
+test_failed_install_preserves_history() {
+  new_sandbox
+  printf 'base\n' > "$TEST_ROOT/state"
+  printf 'base\nmissing\n' > "$TEST_ROOT/store/1.snap"
+  printf 'target\n' > "$TEST_ROOT/store/1.msg"
+  printf 'base\n' > "$TEST_ROOT/store/2.snap"
+  printf 'later\n' > "$TEST_ROOT/store/2.msg"
+  export PRT_TEST_FAIL_INSTALL='missing'
+
+  if ! run_prt restore 1 >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     assert_contains "$TEST_ROOT/log" 'install missing' &&
+     assert_file "$TEST_ROOT/store/2.snap" &&
+     assert_file "$TEST_ROOT/store/2.msg"; then
+    pass "failed install aborts restore without pruning newer snapshots"
+  else
+    fail "failed install aborts restore without pruning newer snapshots"
+  fi
+}
+
+# 6. Successful restore may prune only snapshots newer than the target.
+test_successful_restore_prunes_newer_history() {
+  new_sandbox
+  printf 'base\nextra\n' > "$TEST_ROOT/state"
+  printf 'base\n' > "$TEST_ROOT/store/1.snap"
+  printf 'base\n' > "$TEST_ROOT/store/1.msg"
+  printf 'base\nextra\n' > "$TEST_ROOT/store/2.snap"
+  printf 'later\n' > "$TEST_ROOT/store/2.msg"
+
+  if run_prt restore 1 >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     grep -Fxq 'base' "$TEST_ROOT/state" &&
+     assert_file "$TEST_ROOT/store/1.snap" &&
+     assert_not_file "$TEST_ROOT/store/2.snap" &&
+     assert_not_file "$TEST_ROOT/store/2.msg"; then
+    pass "successful restore prunes only snapshots newer than target"
+  else
+    fail "successful restore prunes only snapshots newer than target"
+  fi
+}
+
+# 7. Temporary files and locks must not survive a failed restore.
+test_failed_restore_cleans_temporary_state() {
+  new_sandbox
+  printf 'base\nextra\n' > "$TEST_ROOT/state"
+  printf 'base\n' > "$TEST_ROOT/store/1.snap"
+  printf 'base\n' > "$TEST_ROOT/store/1.msg"
+  export PRT_TEST_FAIL_REMOVE='extra'
+
+  run_prt restore 1 >/dev/null 2>&1 || true
+
+  if [ ! -e "$TEST_ROOT/store/.lock" ] &&
+     ! find "$TEST_ROOT/store" -maxdepth 1 -type f \( -name '.current.*' -o -name '.restore.*' -o -name '.snapshot.*' -o -name '.message.*' \) | grep -q .; then
+    pass "failed restore cleans temporary files and lock"
+  else
+    fail "failed restore cleans temporary files and lock"
+  fi
+}
+
+# 8. clean must leave unrelated files untouched.
+test_clean_only_removes_snapshot_namespace() {
+  new_sandbox
+  printf 'base\n' > "$TEST_ROOT/store/1.snap"
+  printf 'base\n' > "$TEST_ROOT/store/1.msg"
+  printf 'keep\n' > "$TEST_ROOT/store/notes.txt"
+  printf 'keep\n' > "$TEST_ROOT/store/not-a-number.snap"
+
+  if run_prt clean >/dev/null 2>&1 &&
+     assert_not_file "$TEST_ROOT/store/1.snap" &&
+     assert_not_file "$TEST_ROOT/store/1.msg" &&
+     assert_file "$TEST_ROOT/store/notes.txt" &&
+     assert_file "$TEST_ROOT/store/not-a-number.snap"; then
+    pass "clean removes only numeric snapshot files"
+  else
+    fail "clean removes only numeric snapshot files"
+  fi
+}
+
+say "1..8"
+test_gap_does_not_overwrite
+test_invalid_snapshot_id
+test_invalid_port_name
+test_failed_remove_preserves_history
+test_failed_install_preserves_history
+test_successful_restore_prunes_newer_history
+test_failed_restore_cleans_temporary_state
+test_clean_only_removes_snapshot_namespace
+
+say ""
+say "$PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]

@@ -23,8 +23,15 @@
 # THE SOFTWARE.
 #
 
+
+# Run privileged operations with a predictable environment. Snapshot state is
+# root-managed and should not be created with permissive file modes.
+PATH="/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
+umask 077
+
 msgError() {
-  echo "$APPNAME: Error, $@" 2>&1
+  echo "$APPNAME: Error, $*" >&2
   exit 1
 }
 
@@ -47,110 +54,334 @@ msgUsage() {
 }
 
 checkUID() {
-  [ $(id -u) -ne 0 ] && msgError "you must be root to use $APPNAME"
+  [ "$(id -u)" -ne 0 ] && msgError "you must be root to use $APPNAME"
 }
 
 checkVarDir() {
-  [ ! -d $VARDIR ] && msgError "can't access to directory $VARDIR"
-}
+  local owner
+  local mode
 
-checkSnapFile() {
-  [ ! -f $1 ] && msgError "could not read snapshot file $1"
-}
+  [ -L "$VARDIR" ] && msgError "snapshot directory must not be a symbolic link"
+  [ -d "$VARDIR" ] || msgError "can't access to directory $VARDIR"
 
-makeSnapshot() {
-  # create a snap file with message passed as argument
-  local num="$1"
-  shift 1
-  local msg="$@"
-  echo "$msg" > $VARDIR/$num.msg
-  prt-get listinst > $VARDIR/$num.snap
-}
+  owner="$(stat -c '%u' "$VARDIR")" ||
+    msgError "could not determine snapshot directory owner"
+  [ "$owner" -eq 0 ] ||
+    msgError "snapshot directory must be owned by root"
 
-diffSnapshot() {
-  # create an temporary snap file to see differences
-  # between current status (snap_ini) and the snap passed as argument (snap_end)
-  local snap_end="$VARDIR/$1.snap"
-  local msg_ini="Temporary snapshot required to use function: diffSnapshot()"
-  local num_ini="$(getSnapshotIndex)"
-  makeSnapshot $num_ini "$msg_ini"
-  local snap_ini="$VARDIR/$num_ini.snap"
-  checkSnapFile $snap_ini
-  checkSnapFile $snap_end
-  #cat $snap1 $snap2 | sort | uniq -u
-  diff $snap_ini $snap_end | grep -e '^>' -e '^<'
-  # delete temporary snapshot
-  rm -f $VARDIR/$(basename $snap_ini .snap).{snap,msg}
-}
+  mode="$(stat -c '%a' "$VARDIR")" ||
+    msgError "could not determine snapshot directory permissions"
 
-getSnapshotIndex() {
-  # return the first index number available (stored snap files + 1)
-  local index="$(find $VARDIR -type f -name '*.snap' | wc -l)"
-  let index++
-  echo $index
-}
-
-cleanSnapshot() {
-  # clean all stored snap files
-  rm -f $VARDIR/*
-}
-
-storeSnapshot() {
-  # store a new snap file with a message
-  local msg="$1"
-  local num="$(getSnapshotIndex)"
-  makeSnapshot $num "$msg"
-}
-
-restoreSnapshot () {
-  # go to a previous status on the system by using a snap
-  local snap="$1"
-  if [ ! -z "$snap" ]; then
-    diffSnapshot $snap | while read symbol port; do
-      [ "$symbol" == "<" ] && prt-get remove $port
-      [ "$symbol" == ">" ] && prt-get install $port
-    done
-    # remove snapshots greater than the one selected to revert on
-    local snaps="$(find $VARDIR -type f -name '*.snap')"
-    for i in ${snaps[@]}; do
-      s="$(basename $i .snap)"
-      [ $s -gt $snap ] && rm -vf $VARDIR/$s.*
-    done
+  if (( (8#$mode & 0022) != 0 )); then
+    msgError "snapshot directory must not be writable by group or others"
   fi
 }
 
+releaseLock() {
+  [ "${LOCK_HELD:-0}" -eq 1 ] || return 0
+
+  rm -f -- "$LOCKDIR/pid"
+  rmdir -- "$LOCKDIR" 2>/dev/null || true
+  LOCK_HELD=0
+}
+
+acquireLock() {
+  local lock_pid=""
+
+  if mkdir -- "$LOCKDIR" 2>/dev/null; then
+    if ! printf '%s\n' "$$" > "$LOCKDIR/pid"; then
+      rmdir -- "$LOCKDIR" 2>/dev/null || true
+      msgError "could not initialize snapshot lock"
+    fi
+    LOCK_HELD=1
+    return 0
+  fi
+
+  # A lock left behind by an uncatchable termination may be recovered only
+  # when it contains a valid PID that is no longer running.
+  if [ -f "$LOCKDIR/pid" ]; then
+    read -r lock_pid < "$LOCKDIR/pid" || lock_pid=""
+
+    if [[ "$lock_pid" =~ ^[0-9]+$ ]] && kill -0 "$lock_pid" 2>/dev/null; then
+      msgError "another $APPNAME operation is already running (pid $lock_pid)"
+    fi
+
+    if [[ "$lock_pid" =~ ^[0-9]+$ ]]; then
+      rm -f -- "$LOCKDIR/pid"
+      if ! rmdir -- "$LOCKDIR" 2>/dev/null; then
+        msgError "could not remove stale snapshot lock"
+      fi
+
+      if mkdir -- "$LOCKDIR" 2>/dev/null; then
+        if ! printf '%s\n' "$$" > "$LOCKDIR/pid"; then
+          rmdir -- "$LOCKDIR" 2>/dev/null || true
+          msgError "could not initialize snapshot lock"
+        fi
+        LOCK_HELD=1
+        return 0
+      fi
+    fi
+  fi
+
+  msgError "snapshot store is locked or contains an invalid stale lock"
+}
+
+validateSnapshotId() {
+  local snap="$1"
+
+  [[ "$snap" =~ ^[0-9]+$ ]] || msgError "invalid snapshot id: $snap"
+}
+
+checkSnapFile() {
+  local snap_file="$1"
+
+  [ -f "$snap_file" ] || msgError "could not read snapshot file $snap_file"
+}
+
+validatePortName() {
+  local port="$1"
+
+  [[ "$port" =~ ^[A-Za-z0-9][A-Za-z0-9+_.-]*$ ]] ||
+    msgError "invalid port name in snapshot data: $port"
+}
+
+cleanupTempFiles() {
+  [ -n "${TEMP_FILE:-}" ] && rm -f -- "$TEMP_FILE"
+  [ -n "${RESTORE_FILE:-}" ] && rm -f -- "$RESTORE_FILE"
+  releaseLock
+}
+
+captureCurrentState() {
+  local output="$1"
+
+  if ! prt-get listinst > "$output"; then
+    rm -f -- "$output"
+    msgError "could not query installed ports"
+  fi
+}
+
+makeSnapshot() {
+  # Create the snapshot in a temporary file and publish it only after
+  # prt-get has completed successfully.
+  local num="$1"
+  shift
+  local msg="$*"
+  local snap_file="$VARDIR/$num.snap"
+  local msg_file="$VARDIR/$num.msg"
+  local snap_tmp
+  local msg_tmp
+
+  [ ! -e "$snap_file" ] || msgError "snapshot $num already exists"
+  [ ! -e "$msg_file" ] || msgError "snapshot message $num already exists"
+
+  snap_tmp="$(mktemp "$VARDIR/.snapshot.XXXXXX")" ||
+    msgError "could not create temporary snapshot file"
+  msg_tmp="$(mktemp "$VARDIR/.message.XXXXXX")" || {
+    rm -f -- "$snap_tmp"
+    msgError "could not create temporary message file"
+  }
+
+  if ! printf '%s\n' "$msg" > "$msg_tmp"; then
+    rm -f -- "$snap_tmp" "$msg_tmp"
+    msgError "could not write snapshot message"
+  fi
+
+  if ! prt-get listinst > "$snap_tmp"; then
+    rm -f -- "$snap_tmp" "$msg_tmp"
+    msgError "could not query installed ports"
+  fi
+
+  # Publish the .snap file last: list/getSnapshotIndex only consider .snap files,
+  # so a snapshot becomes visible only after all its data is ready.
+  if ! mv -- "$msg_tmp" "$msg_file"; then
+    rm -f -- "$snap_tmp" "$msg_tmp"
+    msgError "could not store snapshot message"
+  fi
+
+  if ! mv -- "$snap_tmp" "$snap_file"; then
+    rm -f -- "$snap_tmp" "$msg_file"
+    msgError "could not store snapshot"
+  fi
+}
+
+diffSnapshot() {
+  # Compare current package state with a stored snapshot without creating
+  # a numbered snapshot in the persistent history.
+  local snap="$1"
+  local snap_end
+  local diff_status
+
+  validateSnapshotId "$snap"
+  snap_end="$VARDIR/$snap.snap"
+  checkSnapFile "$snap_end"
+
+  TEMP_FILE="$(mktemp "$VARDIR/.current.XXXXXX")" ||
+    msgError "could not create temporary snapshot file"
+
+  captureCurrentState "$TEMP_FILE"
+
+  diff "$TEMP_FILE" "$snap_end" | grep -e '^>' -e '^<'
+  diff_status="${PIPESTATUS[0]}"
+
+  rm -f -- "$TEMP_FILE"
+  TEMP_FILE=""
+
+  # diff returns 0 for identical files and 1 for differences.
+  [ "$diff_status" -le 1 ] || msgError "could not compare snapshot $snap"
+}
+
+getSnapshotIndex() {
+  # Return max(existing numeric snapshot ids) + 1. Counting files is unsafe
+  # when there are gaps in the snapshot history.
+  local snap_file
+  local snap_id
+  local max=0
+
+  while IFS= read -r snap_file; do
+    snap_id="$(basename "$snap_file" .snap)"
+    [[ "$snap_id" =~ ^[0-9]+$ ]] || continue
+    (( snap_id > max )) && max="$snap_id"
+  done < <(find "$VARDIR" -maxdepth 1 -type f -name '*.snap' -print)
+
+  echo $((max + 1))
+}
+
+cleanSnapshot() {
+  # Remove only files that match prt-snapshot's numeric snapshot namespace.
+  local snap_file
+  local snap_id
+
+  while IFS= read -r snap_file; do
+    snap_id="$(basename "$snap_file" .snap)"
+    [[ "$snap_id" =~ ^[0-9]+$ ]] || continue
+    rm -f -- "$VARDIR/$snap_id.snap" "$VARDIR/$snap_id.msg"
+  done < <(find "$VARDIR" -maxdepth 1 -type f -name '*.snap' -print)
+}
+
+storeSnapshot() {
+  # Store a new snapshot with a message.
+  local msg="$1"
+  local num
+
+  num="$(getSnapshotIndex)"
+  makeSnapshot "$num" "$msg"
+}
+
+restoreSnapshot() {
+  # Restore package membership to a previous snapshot. Snapshot history is
+  # pruned only after every package operation has completed successfully.
+  local snap="$1"
+  local symbol
+  local port
+  local snap_file
+  local snap_id
+
+  validateSnapshotId "$snap"
+  checkSnapFile "$VARDIR/$snap.snap"
+
+  RESTORE_FILE="$(mktemp "$VARDIR/.restore.XXXXXX")" ||
+    msgError "could not create temporary restore file"
+
+  if ! diffSnapshot "$snap" > "$RESTORE_FILE"; then
+    msgError "could not calculate restore operations"
+  fi
+
+  while read -r symbol port; do
+    validatePortName "$port"
+
+    case "$symbol" in
+      "<")
+        if ! prt-get remove "$port"; then
+          msgError "failed to remove port: $port"
+        fi
+        ;;
+      ">")
+        if ! prt-get install "$port"; then
+          msgError "failed to install port: $port"
+        fi
+        ;;
+      *)
+        msgError "invalid restore operation in snapshot diff"
+        ;;
+    esac
+  done < "$RESTORE_FILE"
+
+  rm -f -- "$RESTORE_FILE"
+  RESTORE_FILE=""
+
+  # Only a successful restore may prune snapshots newer than the target.
+  while IFS= read -r snap_file; do
+    snap_id="$(basename "$snap_file" .snap)"
+    [[ "$snap_id" =~ ^[0-9]+$ ]] || continue
+
+    if (( snap_id > snap )); then
+      rm -f -- "$VARDIR/$snap_id.snap" "$VARDIR/$snap_id.msg"
+    fi
+  done < <(find "$VARDIR" -maxdepth 1 -type f -name '*.snap' -print)
+}
+
 listSnapshot() {
-  # return a list of all stored snap files
-  local snaps="$(find $VARDIR -type f -name '*.snap' | sort -u)"
-  for i in ${snaps[@]}; do
-    s="$(basename $i .snap)"
-    t="$(stat -c '%y' $i | cut -d'.' -f1)"
-    echo -ne "$s -- $t -- $(cat $VARDIR/$s.msg | tr '\n' ' ')\n"
+  # Return a list of all stored snapshots in numeric order.
+  local snap_file
+  local snap_id
+  local timestamp
+  local msg_file
+
+  while IFS= read -r snap_file; do
+    snap_id="$(basename "$snap_file" .snap)"
+    [[ "$snap_id" =~ ^[0-9]+$ ]] || continue
+    printf '%s\n' "$snap_id"
+  done < <(find "$VARDIR" -maxdepth 1 -type f -name '*.snap' -print) |
+  sort -n |
+  while IFS= read -r snap_id; do
+    snap_file="$VARDIR/$snap_id.snap"
+    msg_file="$VARDIR/$snap_id.msg"
+    timestamp="$(stat -c '%y' "$snap_file" | cut -d'.' -f1)"
+
+    if [ -f "$msg_file" ]; then
+      printf '%s -- %s -- %s\n' \
+        "$snap_id" "$timestamp" "$(tr '\n' ' ' < "$msg_file")"
+    else
+      printf '%s -- %s --\n' "$snap_id" "$timestamp"
+    fi
   done
 }
 
-main () {
-  case $1 in
+main() {
+  case "$1" in
     clean)
+      checkUID
+      acquireLock
       cleanSnapshot
+      releaseLock
       ;;
     store)
-      [ $# -ne 2 ] && msgUsage
+      [ "$#" -ne 2 ] && msgUsage
       checkUID
-      shift 1
+      acquireLock
+      shift
       storeSnapshot "$@"
+      releaseLock
       ;;
     restore)
-      [ $# -ne 2 ] && msgUsage
+      [ "$#" -ne 2 ] && msgUsage
       checkUID
-      restoreSnapshot $2
+      acquireLock
+      restoreSnapshot "$2"
+      releaseLock
       ;;
     diff)
-      [ $# -ne 2 ] && msgUsage
-      diffSnapshot $2
+      [ "$#" -ne 2 ] && msgUsage
+      checkUID
+      acquireLock
+      diffSnapshot "$2"
+      releaseLock
       ;;
     list)
+      checkUID
+      acquireLock
       listSnapshot
+      releaseLock
       ;;
     version)
       msgVersion
@@ -161,12 +392,18 @@ main () {
   esac
 }
 
-VERSION=0.3
-APPNAME=$(basename $0)
+VERSION=0.4
+APPNAME="$(basename "$0")"
 
 VARDIR="/var/lib/pkg/snapshots"
+LOCKDIR="$VARDIR/.lock"
+LOCK_HELD=0
+TEMP_FILE=""
+RESTORE_FILE=""
 
-[ $# -lt 1 ] && msgUsage
+trap cleanupTempFiles EXIT INT TERM
+
+[ "$#" -lt 1 ] && msgUsage
 
 checkVarDir
 
