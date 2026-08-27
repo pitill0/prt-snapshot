@@ -45,7 +45,8 @@ msgUsage() {
   echo "Where commands are:"
   echo "  clean         Remove all stored snapshots"
   echo "  store    msg  Take an snapshot of installed ports"
-  echo "  restore  num  Restore to a status defined by certain snapshot"
+  echo "  restore  num [--dry-run|--yes]"
+  echo "                 Restore to a status defined by certain snapshot"
   echo "  diff     num  Return differences between current status and a snapshot"
   echo "  list          List all stored snapshots"
   echo "  help          Show this help information"
@@ -267,28 +268,83 @@ storeSnapshot() {
   makeSnapshot "$num" "$msg"
 }
 
-restoreSnapshot() {
-  # Restore package membership to a previous snapshot. Snapshot history is
-  # pruned only after every package operation has completed successfully.
+validateRestorePlan() {
+  local symbol
+  local port
+  local extra
+
+  # Validate the complete plan before executing the first destructive command.
+  while read -r symbol port extra; do
+    [ -n "$symbol" ] || continue
+
+    [ -z "${extra:-}" ] ||
+      msgError "invalid restore operation in snapshot diff"
+
+    case "$symbol" in
+      "<"|">")
+        ;;
+      *)
+        msgError "invalid restore operation in snapshot diff"
+        ;;
+    esac
+
+    [ -n "${port:-}" ] ||
+      msgError "invalid restore operation in snapshot diff"
+    validatePortName "$port"
+  done < "$RESTORE_FILE"
+}
+
+printRestorePlan() {
   local snap="$1"
   local symbol
   local port
-  local snap_file
-  local snap_id
-
-  validateSnapshotId "$snap"
-  checkSnapFile "$VARDIR/$snap.snap"
-
-  RESTORE_FILE="$(mktemp "$VARDIR/.restore.XXXXXX")" ||
-    msgError "could not create temporary restore file"
-
-  if ! diffSnapshot "$snap" > "$RESTORE_FILE"; then
-    msgError "could not calculate restore operations"
-  fi
+  local remove_count=0
+  local install_count=0
 
   while read -r symbol port; do
-    validatePortName "$port"
+    case "$symbol" in
+      "<") remove_count=$((remove_count + 1)) ;;
+      ">") install_count=$((install_count + 1)) ;;
+    esac
+  done < "$RESTORE_FILE"
 
+  printf 'Restore plan for snapshot %s:\n' "$snap"
+  printf '  Remove (%d):\n' "$remove_count"
+  while read -r symbol port; do
+    [ "$symbol" = "<" ] && printf '    %s\n' "$port"
+  done < "$RESTORE_FILE"
+
+  printf '  Install (%d):\n' "$install_count"
+  while read -r symbol port; do
+    [ "$symbol" = ">" ] && printf '    %s\n' "$port"
+  done < "$RESTORE_FILE"
+}
+
+confirmRestore() {
+  local answer
+
+  if [ ! -t 0 ]; then
+    msgError "restore requires confirmation; use --yes or --dry-run in non-interactive mode"
+  fi
+
+  printf 'Proceed with restore? [y/N] '
+  read -r answer || return 1
+
+  case "$answer" in
+    y|Y|yes|YES|Yes)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+applyRestorePlan() {
+  local symbol
+  local port
+
+  while read -r symbol port; do
     case "$symbol" in
       "<")
         if ! prt-get remove "$port"; then
@@ -300,16 +356,15 @@ restoreSnapshot() {
           msgError "failed to install port: $port"
         fi
         ;;
-      *)
-        msgError "invalid restore operation in snapshot diff"
-        ;;
     esac
   done < "$RESTORE_FILE"
+}
 
-  rm -f -- "$RESTORE_FILE"
-  RESTORE_FILE=""
+pruneSnapshotHistory() {
+  local snap="$1"
+  local snap_file
+  local snap_id
 
-  # Only a successful restore may prune snapshots newer than the target.
   while IFS= read -r snap_file; do
     snap_id="$(basename "$snap_file" .snap)"
     [[ "$snap_id" =~ ^[0-9]+$ ]] || continue
@@ -318,6 +373,47 @@ restoreSnapshot() {
       rm -f -- "$VARDIR/$snap_id.snap" "$VARDIR/$snap_id.msg"
     fi
   done < <(find "$VARDIR" -maxdepth 1 -type f -name '*.snap' -print)
+}
+
+restoreSnapshot() {
+  # Restore package membership to a previous snapshot. The complete plan is
+  # validated and shown before any package operation is allowed to run.
+  local snap="$1"
+  local mode="${2:-prompt}"
+
+  validateSnapshotId "$snap"
+  checkSnapFile "$VARDIR/$snap.snap"
+
+  RESTORE_FILE="$(mktemp "$VARDIR/.restore.XXXXXX")" ||
+    msgError "could not create temporary restore file"
+
+  if ! diffSnapshot "$snap" > "$RESTORE_FILE"; then
+    msgError "could not calculate restore operations"
+  fi
+
+  validateRestorePlan
+  printRestorePlan "$snap"
+
+  if [ "$mode" = "dry-run" ]; then
+    rm -f -- "$RESTORE_FILE"
+    RESTORE_FILE=""
+    return 0
+  fi
+
+  if [ "$mode" = "prompt" ] && ! confirmRestore; then
+    rm -f -- "$RESTORE_FILE"
+    RESTORE_FILE=""
+    printf 'Restore cancelled.\n'
+    return 0
+  fi
+
+  applyRestorePlan
+
+  rm -f -- "$RESTORE_FILE"
+  RESTORE_FILE=""
+
+  # Only a successful, applied restore may prune newer snapshot history.
+  pruneSnapshotHistory "$snap"
 }
 
 listSnapshot() {
@@ -364,10 +460,27 @@ main() {
       releaseLock
       ;;
     restore)
-      [ "$#" -ne 2 ] && msgUsage
+      [ "$#" -lt 2 ] && msgUsage
+      [ "$#" -gt 3 ] && msgUsage
+
+      case "${3:-}" in
+        "")
+          restore_mode="prompt"
+          ;;
+        --dry-run)
+          restore_mode="dry-run"
+          ;;
+        --yes)
+          restore_mode="yes"
+          ;;
+        *)
+          msgUsage
+          ;;
+      esac
+
       checkUID
       acquireLock
-      restoreSnapshot "$2"
+      restoreSnapshot "$2" "$restore_mode"
       releaseLock
       ;;
     diff)
@@ -392,7 +505,7 @@ main() {
   esac
 }
 
-VERSION=0.4
+VERSION=0.5
 APPNAME="$(basename "$0")"
 
 VARDIR="/var/lib/pkg/snapshots"
