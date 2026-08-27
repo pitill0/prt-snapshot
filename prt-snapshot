@@ -48,6 +48,8 @@ msgUsage() {
   echo "  restore  num [--dry-run|--yes]"
   echo "                 Restore to a status defined by certain snapshot"
   echo "  diff     num  Return differences between current status and a snapshot"
+  echo "  show     num [--packages]"
+  echo "                 Show snapshot details or package names only"
   echo "  list          List all stored snapshots"
   echo "  help          Show this help information"
   echo "  version       Show version information"
@@ -416,6 +418,51 @@ restoreSnapshot() {
   pruneSnapshotHistory "$snap"
 }
 
+showSnapshot() {
+  local snap="$1"
+  local mode="${2:-full}"
+  local snap_file
+  local msg_file
+  local timestamp
+  local message=""
+  local port
+  local count=0
+
+  validateSnapshotId "$snap"
+
+  snap_file="$VARDIR/$snap.snap"
+  msg_file="$VARDIR/$snap.msg"
+  checkSnapFile "$snap_file"
+
+  # Validate the complete snapshot before producing output.
+  while IFS= read -r port || [ -n "$port" ]; do
+    [ -n "$port" ] || msgError "invalid empty port name in snapshot data"
+    validatePortName "$port"
+    count=$((count + 1))
+  done < "$snap_file"
+
+  if [ "$mode" = "packages" ]; then
+    cat -- "$snap_file"
+    return 0
+  fi
+
+  timestamp="$(stat -c '%y' "$snap_file" | cut -d'.' -f1)" ||
+    msgError "could not determine snapshot timestamp"
+
+  if [ -f "$msg_file" ]; then
+    message="$(tr '\n' ' ' < "$msg_file")"
+  fi
+
+  printf 'Snapshot: %s\n' "$snap"
+  printf 'Created: %s\n' "$timestamp"
+  printf 'Message: %s\n' "$message"
+  printf 'Packages (%d):\n' "$count"
+
+  while IFS= read -r port || [ -n "$port" ]; do
+    printf '  %s\n' "$port"
+  done < "$snap_file"
+}
+
 listSnapshot() {
   # Return a list of all stored snapshots in numeric order.
   local snap_file
@@ -488,6 +535,27 @@ main() {
       checkUID
       acquireLock
       diffSnapshot "$2"
+      releaseLock
+      ;;
+    show)
+      [ "$#" -lt 2 ] && msgUsage
+      [ "$#" -gt 3 ] && msgUsage
+
+      case "${3:-}" in
+        "")
+          show_mode="full"
+          ;;
+        --packages)
+          show_mode="packages"
+          ;;
+        *)
+          msgUsage
+          ;;
+      esac
+
+      checkUID
+      acquireLock
+      showSnapshot "$2" "$show_mode"
       releaseLock
       ;;
     list)
