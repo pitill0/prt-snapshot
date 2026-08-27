@@ -1,4 +1,4 @@
-.TH PRT-SNAPSHOT 1 "August 2026" "prt-snapshot 0.4" "User Commands"
+.TH PRT-SNAPSHOT 1 "August 2026" "prt-snapshot 0.5" "User Commands"
 
 .SH NAME
 prt-snapshot \- manage snapshots of the package set installed by prt-get
@@ -12,8 +12,8 @@ prt-snapshot \- manage snapshots of the package set installed by prt-get
 .B prt-snapshot
 stores the package names reported by
 .B prt-get listinst
-and can later compare the current installed package set with a stored snapshot
-or restore package membership to that snapshot.
+and can later inspect a stored snapshot, compare the current installed package
+set with it, or restore package membership to that snapshot.
 
 .PP
 Snapshots are package-set snapshots, not full system snapshots. Package
@@ -35,11 +35,15 @@ Store the current installed package set with the supplied message.
 .TP
 .B restore
 .I num
+.RI [ --dry-run | --yes ]
 Restore package membership to snapshot
 .IR num .
 Packages not present in the target snapshot are removed. Missing packages are
 installed with
 .BR "prt-get install" .
+Before execution, the complete plan is validated and missing packages are
+ordered using
+.BR "prt-get quickdep" .
 
 .TP
 .B diff
@@ -48,32 +52,82 @@ Show package-set differences between the current system and snapshot
 .IR num .
 
 .TP
+.B show
+.I num
+.RI [ --packages ]
+Show snapshot metadata and package membership.
+With
+.BR --packages ,
+print only validated package names, one per line.
+
+.TP
 .B list
 List stored snapshots in numeric order.
 
 .TP
 .B help
-Show usage information.
+Show usage information. This command does not require an initialized snapshot
+store.
 
 .TP
 .B version
-Show version information.
+Show version information. This command does not require an initialized snapshot
+store.
 
 .SH RESTORE SEMANTICS
 Restore intentionally uses
 .B prt-get install
 rather than
 .BR "prt-get depinst" .
-Resolving dependencies again against a newer ports tree could install packages
-that were not present in the stored snapshot.
 
 .PP
-As a consequence, restore can fail when missing packages need to be installed
-in a dependency order different from the order produced by the snapshot
-comparison. On failure,
+Before the first package mutation,
 .B prt-snapshot
-aborts immediately and does not remove snapshots newer than the requested
-target.
+calculates and validates the complete restore plan. Missing packages are ordered
+with
+.B prt-get quickdep
+but dependency information is filtered strictly to package names already present
+in the target snapshot.
+
+.PP
+Dependency discovery is therefore used only for ordering. A dependency reported
+by the current ports tree is never added to the restore unless it already
+belongs to the target snapshot.
+
+.PP
+.B --dry-run
+prints the exact removal and dependency-aware installation plan without changing
+package state or pruning snapshot history.
+
+.PP
+Without
+.B --dry-run
+or
+.B --yes ,
+interactive restore prints the plan and asks for confirmation. Non-interactive
+restore requires explicit use of
+.B --yes
+or
+.BR --dry-run .
+
+.PP
+If plan validation or dependency-order resolution fails, restore aborts before
+any package mutation. If package removal or installation later fails,
+.B prt-snapshot
+aborts immediately and preserves snapshots newer than the requested target.
+Newer history is pruned only after a completely successful applied restore.
+
+.SH SNAPSHOT INSPECTION
+.B show
+validates snapshot package data before producing output.
+
+.PP
+The default output contains the snapshot identifier, creation timestamp, stored
+message, package count, and package list.
+
+.PP
+.B show --packages
+provides a scripting-friendly package-name-only output.
 
 .SH SAFETY
 Operational commands require root.
@@ -85,12 +139,19 @@ must be owned by root, must not be a symbolic link, and must not be writable by
 group or others.
 
 .PP
-Version 0.4 validates snapshot identifiers and package names before destructive
-operations, creates snapshots through temporary files, prevents numbered
+The safety baseline introduced in version 0.4 validates snapshot identifiers and
+package names, creates snapshots through temporary files, prevents numbered
 snapshot collisions, serializes operations with a lock, limits
 .B clean
 to the numeric snapshot namespace, and preserves newer snapshots when restore
 fails.
+
+.PP
+Version 0.5 additionally validates the complete restore plan before mutation,
+adds explicit restore preview and confirmation, orders target packages using
+filtered
+.B quickdep
+results, and prevents dependency discovery from expanding snapshot membership.
 
 .SH FILES
 
@@ -103,9 +164,9 @@ Persistent snapshot store.
 Temporary operation lock.
 
 .SH EXIT STATUS
-Returns zero on successful completion and non-zero when validation, snapshot
-capture, comparison, locking, package installation, package removal, or other
-required operations fail.
+Returns zero on successful completion and non-zero for invalid CLI usage or when
+validation, snapshot capture, comparison, locking, dependency-order resolution,
+package installation, package removal, or another required operation fails.
 
 .SH AUTHORS
 Victor Martinez, <pitillo at crux-arm dot nu>
