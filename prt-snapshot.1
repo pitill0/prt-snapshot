@@ -54,11 +54,14 @@ Show package-set differences between the current system and snapshot
 .TP
 .B show
 .I num
-.RI [ --packages ]
+.RI [ --packages | --json ]
 Show snapshot metadata and package membership.
 With
 .BR --packages ,
 print only validated package names, one per line.
+With
+.BR --json ,
+print a machine-readable schema 1 JSON object.
 
 .TP
 .B list
@@ -128,6 +131,13 @@ message, package count, and package list.
 .PP
 .B show --packages
 provides a scripting-friendly package-name-only output.
+
+.PP
+.B show --json
+outputs a schema 1 JSON object containing the snapshot identifier, creation
+timestamp, stored message, and package list. On success, stdout contains only
+the JSON document. Diagnostics are written to stderr, and failures do not emit
+partial JSON to stdout.
 
 .SH SAFETY
 Operational commands require root.
