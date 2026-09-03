@@ -56,6 +56,13 @@ set -u
 
 STATE="${PRT_TEST_STATE:?}"
 LOG="${PRT_TEST_LOG:?}"
+PKG_DB="${PRT_TEST_PKG_DB:-}"
+
+recreate_pkg_db() {
+  [ -n "$PKG_DB" ] || return 0
+  rm -f -- "$PKG_DB"
+  : > "$PKG_DB"
+}
 
 case "${1:-}" in
   listinst)
@@ -85,6 +92,7 @@ case "${1:-}" in
   remove)
     port="${2:-}"
     printf 'remove %s\n' "$port" >> "$LOG"
+    recreate_pkg_db
     if [ "${PRT_TEST_FAIL_REMOVE:-}" = "$port" ]; then
       exit 42
     fi
@@ -94,6 +102,7 @@ case "${1:-}" in
   install)
     port="${2:-}"
     printf 'install %s\n' "$port" >> "$LOG"
+    recreate_pkg_db
     if [ "${PRT_TEST_FAIL_INSTALL:-}" = "$port" ]; then
       exit 43
     fi
@@ -114,6 +123,7 @@ MOCK
   : > "$TEST_ROOT/log"
   export PRT_TEST_STATE="$TEST_ROOT/state"
   export PRT_TEST_LOG="$TEST_ROOT/log"
+  unset PRT_TEST_PKG_DB
   unset PRT_TEST_FAIL_REMOVE PRT_TEST_FAIL_INSTALL PRT_TEST_FAIL_QUICKDEP
 }
 
@@ -483,7 +493,40 @@ test_dry_run_shows_dependency_order() {
   fi
 }
 
-say "1..19"
+# 20. Mutating prt-get calls must not inherit a restrictive caller umask.
+test_restore_does_not_restrict_pkgutils_db() {
+  new_sandbox
+  printf 'base\nextra\n' > "$TEST_ROOT/state"
+  printf 'base\nmissing\n' > "$TEST_ROOT/store/1.snap"
+  printf 'target\n' > "$TEST_ROOT/store/1.msg"
+  export PRT_TEST_PKG_DB="$TEST_ROOT/pkg-db"
+
+  if (umask 077; run_prt restore 1 --yes >"$TEST_ROOT/out" 2>"$TEST_ROOT/err") &&
+     [ -f "$TEST_ROOT/pkg-db" ] &&
+     [ "$(stat -c '%a' "$TEST_ROOT/pkg-db")" = "644" ] &&
+     assert_contains "$TEST_ROOT/log" 'remove extra' &&
+     assert_contains "$TEST_ROOT/log" 'install missing'; then
+    pass "restore isolates pkgutils from restrictive caller umask"
+  else
+    fail "restore isolates pkgutils from restrictive caller umask"
+  fi
+}
+
+# 21. Snapshot-owned persistent files must remain private without a global umask.
+test_store_keeps_snapshot_files_private() {
+  new_sandbox
+  printf 'base\n' > "$TEST_ROOT/state"
+
+  if (umask 022; run_prt store "private snapshot" >"$TEST_ROOT/out" 2>"$TEST_ROOT/err") &&
+     [ "$(stat -c '%a' "$TEST_ROOT/store/1.snap")" = "600" ] &&
+     [ "$(stat -c '%a' "$TEST_ROOT/store/1.msg")" = "600" ]; then
+    pass "store explicitly keeps snapshot files private"
+  else
+    fail "store explicitly keeps snapshot files private"
+  fi
+}
+
+say "1..21"
 test_gap_does_not_overwrite
 test_invalid_snapshot_id
 test_invalid_port_name
@@ -503,6 +546,8 @@ test_quickdep_failure_precedes_mutation
 test_help_and_version_without_store
 test_invalid_cli_returns_failure
 test_dry_run_shows_dependency_order
+test_restore_does_not_restrict_pkgutils_db
+test_store_keeps_snapshot_files_private
 
 say ""
 say "$PASS passed, $FAIL failed"

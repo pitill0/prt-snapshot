@@ -24,11 +24,11 @@
 #
 
 
-# Run privileged operations with a predictable environment. Snapshot state is
-# root-managed and should not be created with permissive file modes.
+# Run privileged operations with a predictable executable search path.
+# Do not set a process-wide restrictive umask here: prt-get/pkgutils inherit it
+# and may recreate shared package metadata such as /var/lib/pkg/db.
 PATH="/usr/sbin:/usr/bin:/sbin:/bin"
 export PATH
-umask 077
 
 msgError() {
   echo "$APPNAME: Error, $*" >&2
@@ -195,6 +195,11 @@ makeSnapshot() {
   if ! prt-get listinst > "$snap_tmp"; then
     rm -f -- "$snap_tmp" "$msg_tmp"
     msgError "could not query installed ports"
+  fi
+
+  if ! chmod 0600 -- "$snap_tmp" "$msg_tmp"; then
+    rm -f -- "$snap_tmp" "$msg_tmp"
+    msgError "could not secure snapshot files"
   fi
 
   # Publish the .snap file last: list/getSnapshotIndex only consider .snap files,
@@ -397,14 +402,14 @@ applyRestorePlan() {
   while read -r symbol port; do
     [ "$symbol" = "<" ] || continue
 
-    if ! prt-get remove "$port"; then
+    if ! (umask 022; prt-get remove "$port"); then
       msgError "failed to remove port: $port"
     fi
   done < "$RESTORE_FILE"
 
   # Install only target-snapshot members, in quickdep-derived order.
   while IFS= read -r port; do
-    if ! prt-get install "$port"; then
+    if ! (umask 022; prt-get install "$port"); then
       msgError "failed to install port: $port"
     fi
   done < "$INSTALL_FILE"
@@ -634,7 +639,7 @@ main() {
   esac
 }
 
-VERSION=0.5
+VERSION=0.5.1
 APPNAME="$(basename "$0")"
 
 VARDIR="/var/lib/pkg/snapshots"
