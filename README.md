@@ -49,7 +49,7 @@ Commands:
   clean                         Remove all stored snapshots
   store msg                     Take a snapshot of installed ports
   restore num [--dry-run|--yes] Restore package membership to snapshot num
-  diff num                      Show differences between current state and snapshot num
+  diff num [--json]             Show differences or emit a machine-readable restore plan
   show num [--packages|--json]  Show snapshot details, package names, or JSON
   list [--json]                 List stored snapshots or emit JSON
   help                          Show usage information
@@ -66,6 +66,7 @@ sudo prt-snapshot show 1
 sudo prt-snapshot show 1 --packages
 sudo prt-snapshot show 1 --json
 sudo prt-snapshot diff 1
+sudo prt-snapshot diff 1 --json
 sudo prt-snapshot restore 1 --dry-run
 sudo prt-snapshot restore 1
 ```
@@ -126,6 +127,11 @@ snapshot store is represented by an empty array.
 
 As with `show --json`, successful machine-readable output contains only JSON on
 stdout and diagnostics are reserved for stderr.
+
+`diff <num> --json` emits a schema 1 restore-plan object with `remove` and
+`install` arrays. The `install` array uses the same dependency-aware ordering
+logic as restore and dependency discovery never expands snapshot membership.
+An identical current package set is a successful result with both arrays empty.
 
 ## Restore behavior
 
@@ -200,7 +206,7 @@ Version 0.5 adds:
 
 ## Tests
 
-The regression suite currently contains 29 tests and can be run with:
+The regression suite currently contains 34 tests and can be run with:
 
 ```sh
 sudo ./tests/run.sh

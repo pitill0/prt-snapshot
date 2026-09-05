@@ -48,8 +48,13 @@ ordered using
 .TP
 .B diff
 .I num
+.RI [ --json ]
 Show package-set differences between the current system and snapshot
 .IR num .
+With
+.BR --json ,
+emit a schema 1 restore-plan object with removal membership and dependency-aware
+installation order.
 
 .TP
 .B show
@@ -133,6 +138,17 @@ validates snapshot package data before producing output.
 .PP
 The default output contains the snapshot identifier, creation timestamp, stored
 message, package count, and package list.
+
+.PP
+.B diff --json
+outputs a schema 1 object containing the target snapshot identifier plus
+.B remove
+and
+.B install
+arrays. Installation order uses the same filtered
+.B quickdep
+logic as restore. Differences are a successful result; identical package sets
+produce empty arrays.
 
 .PP
 .B show --packages
