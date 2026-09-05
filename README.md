@@ -140,6 +140,19 @@ An identical current package set is a successful result with both arrays empty.
 dependency-aware `install` ordering. JSON output is available only with
 `--dry-run`; applied restores remain human-oriented.
 
+### Machine-readable compatibility
+
+All JSON documents currently use schema 1.
+
+Within schema 1:
+
+- existing fields keep their meaning;
+- array order is part of the contract where it is semantically relevant,
+  especially dependency-aware `install` order;
+- compatible new fields may be added;
+- consumers should ignore unknown fields;
+- incompatible changes require a new schema number.
+
 ## Restore behavior
 
 During restore, packages present in the current system but absent from the
@@ -211,9 +224,28 @@ Version 0.5 adds:
 - correct non-zero exit status for invalid CLI usage;
 - `help` and `version` independent of snapshot-store initialization.
 
+Version 0.5.1 fixes:
+
+- restrictive caller or process umasks leaking into `prt-get`/pkgutils;
+- package-database files recreated with permissions that could block normal
+  unprivileged tools;
+- snapshot privacy using explicit file permissions rather than a global umask.
+
+Version 0.6 adds:
+
+- versioned schema 1 JSON output for automation;
+- `show <num> --json`;
+- `list --json`;
+- `diff <num> --json`;
+- `restore <num> --dry-run --json`;
+- dependency-aware machine-readable restore plans;
+- byte-for-byte parity between JSON diff and JSON restore preview;
+- a stdout/stderr contract that prevents partial JSON on failures;
+- documented schema compatibility rules.
+
 ## Tests
 
-The regression suite currently contains 39 tests and can be run with:
+The regression suite currently contains 41 tests and can be run with:
 
 ```sh
 sudo ./tests/run.sh
