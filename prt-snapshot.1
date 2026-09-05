@@ -65,7 +65,13 @@ print a machine-readable schema 1 JSON object.
 
 .TP
 .B list
+.RI [ --json ]
 List stored snapshots in numeric order.
+With
+.BR --json ,
+emit a schema 1 JSON object containing a
+.B snapshots
+array with snapshot identifiers, creation timestamps, and messages.
 
 .TP
 .B help
@@ -131,6 +137,13 @@ message, package count, and package list.
 .PP
 .B show --packages
 provides a scripting-friendly package-name-only output.
+
+.PP
+.B list --json
+outputs a schema 1 JSON object containing snapshot metadata in numeric snapshot
+order. An empty store is represented by an empty
+.B snapshots
+array.
 
 .PP
 .B show --json

@@ -51,7 +51,7 @@ Commands:
   restore num [--dry-run|--yes] Restore package membership to snapshot num
   diff num                      Show differences between current state and snapshot num
   show num [--packages|--json]  Show snapshot details, package names, or JSON
-  list                          List stored snapshots
+  list [--json]                 List stored snapshots or emit JSON
   help                          Show usage information
   version                       Show version information
 ```
@@ -61,6 +61,7 @@ Examples:
 ```sh
 sudo prt-snapshot store "clean base"
 sudo prt-snapshot list
+sudo prt-snapshot list --json
 sudo prt-snapshot show 1
 sudo prt-snapshot show 1 --packages
 sudo prt-snapshot show 1 --json
@@ -118,6 +119,13 @@ empty. On failure, no partial JSON is written to stdout and diagnostics are
 written to stderr.
 
 Snapshot data is validated before output is produced.
+
+`list --json` emits a schema 1 object with a `snapshots` array. Each entry
+contains `id`, `created`, and `message`, in numeric snapshot order. An empty
+snapshot store is represented by an empty array.
+
+As with `show --json`, successful machine-readable output contains only JSON on
+stdout and diagnostics are reserved for stderr.
 
 ## Restore behavior
 
@@ -192,7 +200,7 @@ Version 0.5 adds:
 
 ## Tests
 
-The regression suite currently contains 25 tests and can be run with:
+The regression suite currently contains 29 tests and can be run with:
 
 ```sh
 sudo ./tests/run.sh
