@@ -526,7 +526,92 @@ test_store_keeps_snapshot_files_private() {
   fi
 }
 
-say "1..21"
+# 22. show --json must emit a parseable, complete machine-readable payload.
+test_show_json_payload() {
+  new_sandbox
+  printf 'alpha\nbeta\n' > "$TEST_ROOT/store/6.snap"
+  printf 'baseline\n' > "$TEST_ROOT/store/6.msg"
+  expected_created="$(stat -c '%y' "$TEST_ROOT/store/6.snap" | cut -d'.' -f1)"
+
+  if run_prt show 6 --json >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     [ ! -s "$TEST_ROOT/err" ] &&
+     python3 - "$TEST_ROOT/out" "$expected_created" <<'PY'
+import json
+import sys
+
+path, expected_created = sys.argv[1:]
+with open(path, encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+assert payload == {
+    "schema": 1,
+    "id": 6,
+    "created": expected_created,
+    "message": "baseline",
+    "packages": ["alpha", "beta"],
+}
+PY
+  then
+    pass "show --json emits the schema 1 snapshot payload"
+  else
+    fail "show --json emits the schema 1 snapshot payload"
+  fi
+}
+
+# 23. JSON strings must safely preserve quotes, backslashes and control chars.
+test_show_json_escaping() {
+  new_sandbox
+  printf 'alpha\n' > "$TEST_ROOT/store/7.snap"
+  printf 'first "quoted"\\path\tpart\nsecond line\001end\n' > "$TEST_ROOT/store/7.msg"
+
+  if run_prt show 7 --json >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     [ ! -s "$TEST_ROOT/err" ] &&
+     python3 - "$TEST_ROOT/out" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+assert payload["message"] == 'first "quoted"\\path\tpart\nsecond line\x01end'
+assert payload["packages"] == ["alpha"]
+PY
+  then
+    pass "show --json safely escapes message strings"
+  else
+    fail "show --json safely escapes message strings"
+  fi
+}
+
+# 24. Machine-readable errors must leave stdout empty.
+test_show_json_missing_snapshot_has_clean_stdout() {
+  new_sandbox
+
+  if ! run_prt show 99 --json >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     [ ! -s "$TEST_ROOT/out" ] &&
+     grep -Fq 'could not read snapshot file' "$TEST_ROOT/err"; then
+    pass "show --json keeps stdout empty when the snapshot is missing"
+  else
+    fail "show --json keeps stdout empty when the snapshot is missing"
+  fi
+}
+
+# 25. Corrupt snapshot data must fail before any JSON is emitted.
+test_show_json_rejects_invalid_package_data() {
+  new_sandbox
+  printf 'alpha\nbad/name\n' > "$TEST_ROOT/store/8.snap"
+  printf 'corrupt\n' > "$TEST_ROOT/store/8.msg"
+
+  if ! run_prt show 8 --json >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     [ ! -s "$TEST_ROOT/out" ] &&
+     grep -Fq 'invalid port name' "$TEST_ROOT/err"; then
+    pass "show --json validates snapshot data before producing output"
+  else
+    fail "show --json validates snapshot data before producing output"
+  fi
+}
+
+say "1..25"
 test_gap_does_not_overwrite
 test_invalid_snapshot_id
 test_invalid_port_name
@@ -548,6 +633,10 @@ test_invalid_cli_returns_failure
 test_dry_run_shows_dependency_order
 test_restore_does_not_restrict_pkgutils_db
 test_store_keeps_snapshot_files_private
+test_show_json_payload
+test_show_json_escaping
+test_show_json_missing_snapshot_has_clean_stdout
+test_show_json_rejects_invalid_package_data
 
 say ""
 say "$PASS passed, $FAIL failed"

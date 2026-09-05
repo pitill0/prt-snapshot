@@ -50,8 +50,8 @@ msgUsage() {
   echo "  restore  num [--dry-run|--yes]"
   echo "                 Restore to a status defined by certain snapshot"
   echo "  diff     num  Return differences between current status and a snapshot"
-  echo "  show     num [--packages]"
-  echo "                 Show snapshot details or package names only"
+  echo "  show     num [--packages|--json]"
+  echo "                 Show snapshot details, package names only, or JSON"
   echo "  list          List all stored snapshots"
   echo "  help          Show this help information"
   echo "  version       Show version information"
@@ -475,6 +475,79 @@ restoreSnapshot() {
   pruneSnapshotHistory "$snap"
 }
 
+jsonEscape() {
+  local value="$1"
+  local char
+  local code
+  local i
+  local LC_ALL=C
+
+  for ((i = 0; i < ${#value}; i++)); do
+    char="${value:i:1}"
+
+    case "$char" in
+      '"')
+        printf '%s' "\\\""
+        ;;
+      "\\")
+        printf '%s' "\\\\"
+        ;;
+      *)
+        printf -v code '%d' "'$char"
+        if [ "$code" -lt 32 ]; then
+          printf '\\u%04x' "$code"
+        else
+          printf '%s' "$char"
+        fi
+        ;;
+    esac
+  done
+}
+
+printShowJson() {
+  local snap="$1"
+  local timestamp="$2"
+  local message="$3"
+  local snap_file="$4"
+  local port
+  local first=1
+
+  printf '{\n'
+  printf '  "schema": 1,\n'
+  printf '  "id": %s,\n' "$snap"
+
+  printf '  "created": "'
+  jsonEscape "$timestamp"
+  printf '",\n'
+
+  printf '  "message": "'
+  jsonEscape "$message"
+  printf '",\n'
+
+  printf '  "packages": ['
+
+  while IFS= read -r port || [ -n "$port" ]; do
+    if [ "$first" -eq 1 ]; then
+      printf '\n'
+      first=0
+    else
+      printf ',\n'
+    fi
+
+    printf '    "'
+    jsonEscape "$port"
+    printf '"'
+  done < "$snap_file"
+
+  if [ "$first" -eq 1 ]; then
+    printf ']\n'
+  else
+    printf '\n  ]\n'
+  fi
+
+  printf '}\n'
+}
+
 showSnapshot() {
   local snap="$1"
   local mode="${2:-full}"
@@ -505,6 +578,15 @@ showSnapshot() {
 
   timestamp="$(stat -c '%y' "$snap_file" | cut -d'.' -f1)" ||
     msgError "could not determine snapshot timestamp"
+
+  if [ "$mode" = "json" ]; then
+    if [ -f "$msg_file" ]; then
+      message="$(cat -- "$msg_file")"
+    fi
+
+    printShowJson "$snap" "$timestamp" "$message" "$snap_file"
+    return 0
+  fi
 
   if [ -f "$msg_file" ]; then
     message="$(tr '\n' ' ' < "$msg_file")"
@@ -608,6 +690,9 @@ main() {
           ;;
         --packages)
           show_mode="packages"
+          ;;
+        --json)
+          show_mode="json"
           ;;
         *)
           msgUsage 1

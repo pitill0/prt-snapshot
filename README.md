@@ -50,7 +50,7 @@ Commands:
   store msg                     Take a snapshot of installed ports
   restore num [--dry-run|--yes] Restore package membership to snapshot num
   diff num                      Show differences between current state and snapshot num
-  show num [--packages]         Show snapshot details or package names only
+  show num [--packages|--json]  Show snapshot details, package names, or JSON
   list                          List stored snapshots
   help                          Show usage information
   version                       Show version information
@@ -63,6 +63,7 @@ sudo prt-snapshot store "clean base"
 sudo prt-snapshot list
 sudo prt-snapshot show 1
 sudo prt-snapshot show 1 --packages
+sudo prt-snapshot show 1 --json
 sudo prt-snapshot diff 1
 sudo prt-snapshot restore 1 --dry-run
 sudo prt-snapshot restore 1
@@ -103,6 +104,18 @@ possible with the currently available ports tree.
 
 For scripting, `show <num> --packages` emits only validated package names, one
 per line.
+
+`show <num> --json` emits a machine-readable schema 1 object containing:
+
+- `schema`;
+- `id`;
+- `created`;
+- `message`;
+- `packages`.
+
+On successful JSON output, stdout contains only the JSON document and stderr is
+empty. On failure, no partial JSON is written to stdout and diagnostics are
+written to stderr.
 
 Snapshot data is validated before output is produced.
 
@@ -179,7 +192,7 @@ Version 0.5 adds:
 
 ## Tests
 
-The regression suite currently contains 19 tests and can be run with:
+The regression suite currently contains 25 tests and can be run with:
 
 ```sh
 sudo ./tests/run.sh
