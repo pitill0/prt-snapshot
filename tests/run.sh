@@ -611,7 +611,99 @@ test_show_json_rejects_invalid_package_data() {
   fi
 }
 
-say "1..25"
+# 26. list --json must emit schema 1 metadata in numeric snapshot order.
+test_list_json_payload() {
+  new_sandbox
+  printf 'ten\n' > "$TEST_ROOT/store/10.snap"
+  printf 'later\n' > "$TEST_ROOT/store/10.msg"
+  printf 'two\n' > "$TEST_ROOT/store/2.snap"
+  printf 'first\n' > "$TEST_ROOT/store/2.msg"
+  created_two="$(stat -c '%y' "$TEST_ROOT/store/2.snap" | cut -d'.' -f1)"
+  created_ten="$(stat -c '%y' "$TEST_ROOT/store/10.snap" | cut -d'.' -f1)"
+
+  if run_prt list --json >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     [ ! -s "$TEST_ROOT/err" ] &&
+     python3 - "$TEST_ROOT/out" "$created_two" "$created_ten" <<'PY'
+import json
+import sys
+
+path, created_two, created_ten = sys.argv[1:]
+with open(path, encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+assert payload == {
+    "schema": 1,
+    "snapshots": [
+        {"id": 2, "created": created_two, "message": "first"},
+        {"id": 10, "created": created_ten, "message": "later"},
+    ],
+}
+PY
+  then
+    pass "list --json emits ordered schema 1 snapshot metadata"
+  else
+    fail "list --json emits ordered schema 1 snapshot metadata"
+  fi
+}
+
+# 27. list --json must represent an empty store with an empty array.
+test_list_json_empty_store() {
+  new_sandbox
+
+  if run_prt list --json >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     [ ! -s "$TEST_ROOT/err" ] &&
+     python3 - "$TEST_ROOT/out" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+assert payload == {"schema": 1, "snapshots": []}
+PY
+  then
+    pass "list --json emits an empty snapshots array for an empty store"
+  else
+    fail "list --json emits an empty snapshots array for an empty store"
+  fi
+}
+
+# 28. list --json must reuse safe JSON escaping for snapshot messages.
+test_list_json_escaping() {
+  new_sandbox
+  printf 'alpha\n' > "$TEST_ROOT/store/3.snap"
+  printf 'first "quoted"\\path\tpart\nsecond line\001end\n' > "$TEST_ROOT/store/3.msg"
+
+  if run_prt list --json >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     [ ! -s "$TEST_ROOT/err" ] &&
+     python3 - "$TEST_ROOT/out" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+assert payload["snapshots"][0]["message"] == 'first "quoted"\\path\tpart\nsecond line\x01end'
+PY
+  then
+    pass "list --json safely escapes snapshot messages"
+  else
+    fail "list --json safely escapes snapshot messages"
+  fi
+}
+
+# 29. list must reject unsupported options instead of silently ignoring them.
+test_list_rejects_invalid_option() {
+  new_sandbox
+
+  if ! run_prt list --invalid >"$TEST_ROOT/out" 2>"$TEST_ROOT/err"; then
+    pass "list rejects unsupported options"
+  else
+    fail "list rejects unsupported options"
+  fi
+}
+
+say "1..29"
 test_gap_does_not_overwrite
 test_invalid_snapshot_id
 test_invalid_port_name
@@ -637,6 +729,10 @@ test_show_json_payload
 test_show_json_escaping
 test_show_json_missing_snapshot_has_clean_stdout
 test_show_json_rejects_invalid_package_data
+test_list_json_payload
+test_list_json_empty_store
+test_list_json_escaping
+test_list_rejects_invalid_option
 
 say ""
 say "$PASS passed, $FAIL failed"
