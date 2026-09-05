@@ -826,7 +826,113 @@ test_diff_human_output_unchanged() {
   fi
 }
 
-say "1..34"
+# 35. restore --dry-run --json must emit the same dependency-aware plan shape.
+test_restore_dry_run_json_payload() {
+  new_sandbox
+  printf 'base\nextra\n' > "$TEST_ROOT/state"
+  printf 'app\nbase\nlib\n' > "$TEST_ROOT/store/1.snap"
+  printf 'target\n' > "$TEST_ROOT/store/1.msg"
+
+  if run_prt restore 1 --dry-run --json >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     [ ! -s "$TEST_ROOT/err" ] &&
+     [ ! -s "$TEST_ROOT/log" ] &&
+     grep -Fxq 'extra' "$TEST_ROOT/state" &&
+     python3 - "$TEST_ROOT/out" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+assert payload == {
+    "schema": 1,
+    "snapshot": 1,
+    "remove": ["extra"],
+    "install": ["lib", "app"],
+}
+PY
+  then
+    pass "restore --dry-run --json emits the dependency-aware plan without mutation"
+  else
+    fail "restore --dry-run --json emits the dependency-aware plan without mutation"
+  fi
+}
+
+# 36. JSON restore preview and diff JSON must expose identical plan payloads.
+test_restore_dry_run_json_matches_diff_json() {
+  new_sandbox
+  printf 'base\nextra\n' > "$TEST_ROOT/state"
+  printf 'app\nbase\nlib\n' > "$TEST_ROOT/store/1.snap"
+  printf 'target\n' > "$TEST_ROOT/store/1.msg"
+
+  if run_prt diff 1 --json >"$TEST_ROOT/diff-json" 2>"$TEST_ROOT/diff-err" &&
+     run_prt restore 1 --dry-run --json >"$TEST_ROOT/restore-json" 2>"$TEST_ROOT/restore-err" &&
+     [ ! -s "$TEST_ROOT/diff-err" ] &&
+     [ ! -s "$TEST_ROOT/restore-err" ] &&
+     cmp -s "$TEST_ROOT/diff-json" "$TEST_ROOT/restore-json" &&
+     [ ! -s "$TEST_ROOT/log" ]; then
+    pass "restore JSON preview matches diff JSON byte for byte"
+  else
+    fail "restore JSON preview matches diff JSON byte for byte"
+  fi
+}
+
+# 37. Dependency-resolution failure must happen before any JSON is emitted.
+test_restore_dry_run_json_quickdep_failure_has_clean_stdout() {
+  new_sandbox
+  printf 'base\n' > "$TEST_ROOT/state"
+  printf 'app\nbase\nlib\n' > "$TEST_ROOT/store/1.snap"
+  printf 'target\n' > "$TEST_ROOT/store/1.msg"
+  export PRT_TEST_FAIL_QUICKDEP='app'
+
+  if ! run_prt restore 1 --dry-run --json >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     [ ! -s "$TEST_ROOT/out" ] &&
+     grep -Fq 'could not resolve dependency order' "$TEST_ROOT/err" &&
+     [ ! -s "$TEST_ROOT/log" ]; then
+    pass "restore --dry-run --json keeps stdout empty on dependency failure"
+  else
+    fail "restore --dry-run --json keeps stdout empty on dependency failure"
+  fi
+}
+
+# 38. JSON is valid only as an explicit extension of --dry-run.
+test_restore_json_requires_dry_run() {
+  new_sandbox
+  printf 'base\n' > "$TEST_ROOT/state"
+  printf 'base\n' > "$TEST_ROOT/store/1.snap"
+
+  if ! run_prt restore 1 --json >/dev/null 2>&1 &&
+     ! run_prt restore 1 --yes --json >/dev/null 2>&1 &&
+     ! run_prt restore 1 --json --dry-run >/dev/null 2>&1 &&
+     [ ! -s "$TEST_ROOT/log" ]; then
+    pass "restore accepts JSON only with canonical --dry-run --json"
+  else
+    fail "restore accepts JSON only with canonical --dry-run --json"
+  fi
+}
+
+# 39. Existing human-readable dry-run output must remain unchanged.
+test_restore_human_dry_run_unchanged() {
+  new_sandbox
+  printf 'base\nextra\n' > "$TEST_ROOT/state"
+  printf 'base\nmissing\n' > "$TEST_ROOT/store/1.snap"
+  printf 'target\n' > "$TEST_ROOT/store/1.msg"
+
+  if run_prt restore 1 --dry-run >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     grep -Fq 'Restore plan for snapshot 1:' "$TEST_ROOT/out" &&
+     grep -Fq 'Remove (1):' "$TEST_ROOT/out" &&
+     grep -Fq 'Install (1):' "$TEST_ROOT/out" &&
+     grep -Fq 'extra' "$TEST_ROOT/out" &&
+     grep -Fq 'missing' "$TEST_ROOT/out" &&
+     [ ! -s "$TEST_ROOT/err" ] &&
+     [ ! -s "$TEST_ROOT/log" ]; then
+    pass "restore --dry-run preserves the existing human-readable plan"
+  else
+    fail "restore --dry-run preserves the existing human-readable plan"
+  fi
+}
+
+say "1..39"
 test_gap_does_not_overwrite
 test_invalid_snapshot_id
 test_invalid_port_name
@@ -861,6 +967,11 @@ test_diff_json_identical_state
 test_diff_json_does_not_expand_membership
 test_diff_json_quickdep_failure_has_clean_stdout
 test_diff_human_output_unchanged
+test_restore_dry_run_json_payload
+test_restore_dry_run_json_matches_diff_json
+test_restore_dry_run_json_quickdep_failure_has_clean_stdout
+test_restore_json_requires_dry_run
+test_restore_human_dry_run_unchanged
 
 say ""
 say "$PASS passed, $FAIL failed"

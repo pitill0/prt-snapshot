@@ -35,7 +35,7 @@ Store the current installed package set with the supplied message.
 .TP
 .B restore
 .I num
-.RI [ --dry-run | --yes ]
+.RI [ --dry-run [ --json ] | --yes ]
 Restore package membership to snapshot
 .IR num .
 Packages not present in the target snapshot are removed. Missing packages are
@@ -111,7 +111,10 @@ belongs to the target snapshot.
 .PP
 .B --dry-run
 prints the exact removal and dependency-aware installation plan without changing
-package state or pruning snapshot history.
+package state or pruning snapshot history. When followed by
+.BR --json ,
+the preview uses the same schema 1 restore-plan object as
+.BR "diff --json" .
 
 .PP
 Without
@@ -149,6 +152,13 @@ arrays. Installation order uses the same filtered
 .B quickdep
 logic as restore. Differences are a successful result; identical package sets
 produce empty arrays.
+
+.PP
+.B restore --dry-run --json
+outputs the same schema 1 restore-plan object as
+.BR "diff --json" .
+The JSON form is preview-only and never applies package changes or prunes
+snapshot history.
 
 .PP
 .B show --packages
