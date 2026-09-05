@@ -703,7 +703,130 @@ test_list_rejects_invalid_option() {
   fi
 }
 
-say "1..29"
+# 30. diff --json must expose removals and dependency-aware install order.
+test_diff_json_payload_and_install_order() {
+  new_sandbox
+  printf 'base\nextra\n' > "$TEST_ROOT/state"
+  printf 'app\nbase\nlib\n' > "$TEST_ROOT/store/1.snap"
+  printf 'target\n' > "$TEST_ROOT/store/1.msg"
+
+  if run_prt diff 1 --json >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     [ ! -s "$TEST_ROOT/err" ] &&
+     [ ! -s "$TEST_ROOT/log" ] &&
+     grep -Fxq 'extra' "$TEST_ROOT/state" &&
+     python3 - "$TEST_ROOT/out" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+assert payload == {
+    "schema": 1,
+    "snapshot": 1,
+    "remove": ["extra"],
+    "install": ["lib", "app"],
+}
+PY
+  then
+    pass "diff --json emits the dependency-aware restore plan without mutation"
+  else
+    fail "diff --json emits the dependency-aware restore plan without mutation"
+  fi
+}
+
+# 31. Identical package sets must be a successful JSON result with empty arrays.
+test_diff_json_identical_state() {
+  new_sandbox
+  printf 'alpha\nbase\n' > "$TEST_ROOT/state"
+  printf 'alpha\nbase\n' > "$TEST_ROOT/store/1.snap"
+  printf 'same\n' > "$TEST_ROOT/store/1.msg"
+
+  if run_prt diff 1 --json >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     [ ! -s "$TEST_ROOT/err" ] &&
+     python3 - "$TEST_ROOT/out" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+assert payload == {
+    "schema": 1,
+    "snapshot": 1,
+    "remove": [],
+    "install": [],
+}
+PY
+  then
+    pass "diff --json treats an identical package set as a successful empty plan"
+  else
+    fail "diff --json treats an identical package set as a successful empty plan"
+  fi
+}
+
+# 32. Dependency discovery must never expand JSON install membership.
+test_diff_json_does_not_expand_membership() {
+  new_sandbox
+  printf 'base\n' > "$TEST_ROOT/state"
+  printf 'base\nforeign-app\n' > "$TEST_ROOT/store/1.snap"
+  printf 'target\n' > "$TEST_ROOT/store/1.msg"
+
+  if run_prt diff 1 --json >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     [ ! -s "$TEST_ROOT/err" ] &&
+     python3 - "$TEST_ROOT/out" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+assert payload["install"] == ["foreign-app"]
+assert "outside" not in payload["install"]
+PY
+  then
+    pass "diff --json dependency ordering never expands snapshot membership"
+  else
+    fail "diff --json dependency ordering never expands snapshot membership"
+  fi
+}
+
+# 33. Dependency-resolution failure must not emit partial JSON.
+test_diff_json_quickdep_failure_has_clean_stdout() {
+  new_sandbox
+  printf 'base\n' > "$TEST_ROOT/state"
+  printf 'app\nbase\nlib\n' > "$TEST_ROOT/store/1.snap"
+  printf 'target\n' > "$TEST_ROOT/store/1.msg"
+  export PRT_TEST_FAIL_QUICKDEP='app'
+
+  if ! run_prt diff 1 --json >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     [ ! -s "$TEST_ROOT/out" ] &&
+     grep -Fq 'could not resolve dependency order' "$TEST_ROOT/err" &&
+     [ ! -s "$TEST_ROOT/log" ]; then
+    pass "diff --json keeps stdout empty when dependency resolution fails"
+  else
+    fail "diff --json keeps stdout empty when dependency resolution fails"
+  fi
+}
+
+# 34. Human diff output must remain unchanged when --json is not requested.
+test_diff_human_output_unchanged() {
+  new_sandbox
+  printf 'base\nextra\n' > "$TEST_ROOT/state"
+  printf 'base\nmissing\n' > "$TEST_ROOT/store/1.snap"
+  printf 'target\n' > "$TEST_ROOT/store/1.msg"
+
+  if run_prt diff 1 >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     grep -Fxq '< extra' "$TEST_ROOT/out" &&
+     grep -Fxq '> missing' "$TEST_ROOT/out" &&
+     [ ! -s "$TEST_ROOT/err" ]; then
+    pass "diff without --json preserves the existing human output"
+  else
+    fail "diff without --json preserves the existing human output"
+  fi
+}
+
+say "1..34"
 test_gap_does_not_overwrite
 test_invalid_snapshot_id
 test_invalid_port_name
@@ -733,6 +856,11 @@ test_list_json_payload
 test_list_json_empty_store
 test_list_json_escaping
 test_list_rejects_invalid_option
+test_diff_json_payload_and_install_order
+test_diff_json_identical_state
+test_diff_json_does_not_expand_membership
+test_diff_json_quickdep_failure_has_clean_stdout
+test_diff_human_output_unchanged
 
 say ""
 say "$PASS passed, $FAIL failed"

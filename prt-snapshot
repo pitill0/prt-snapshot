@@ -49,7 +49,8 @@ msgUsage() {
   echo "  store    msg  Take an snapshot of installed ports"
   echo "  restore  num [--dry-run|--yes]"
   echo "                 Restore to a status defined by certain snapshot"
-  echo "  diff     num  Return differences between current status and a snapshot"
+  echo "  diff     num [--json]"
+  echo "                 Return differences or a machine-readable restore plan"
   echo "  show     num [--packages|--json]"
   echo "                 Show snapshot details, package names only, or JSON"
   echo "  list     [--json]"
@@ -240,6 +241,84 @@ diffSnapshot() {
 
   # diff returns 0 for identical files and 1 for differences.
   [ "$diff_status" -le 1 ] || msgError "could not compare snapshot $snap"
+}
+
+printDiffJson() {
+  local snap="$1"
+  local symbol
+  local port
+  local first=1
+
+  printf '{\n'
+  printf '  "schema": 1,\n'
+  printf '  "snapshot": %s,\n' "$snap"
+  printf '  "remove": ['
+
+  while read -r symbol port; do
+    [ "$symbol" = "<" ] || continue
+
+    if [ "$first" -eq 1 ]; then
+      printf '\n'
+      first=0
+    else
+      printf ',\n'
+    fi
+
+    printf '    "'
+    jsonEscape "$port"
+    printf '"'
+  done < "$RESTORE_FILE"
+
+  if [ "$first" -eq 1 ]; then
+    printf '],\n'
+  else
+    printf '\n  ],\n'
+  fi
+
+  first=1
+  printf '  "install": ['
+
+  while IFS= read -r port; do
+    if [ "$first" -eq 1 ]; then
+      printf '\n'
+      first=0
+    else
+      printf ',\n'
+    fi
+
+    printf '    "'
+    jsonEscape "$port"
+    printf '"'
+  done < "$INSTALL_FILE"
+
+  if [ "$first" -eq 1 ]; then
+    printf ']\n'
+  else
+    printf '\n  ]\n'
+  fi
+
+  printf '}\n'
+}
+
+diffSnapshotJson() {
+  local snap="$1"
+
+  RESTORE_FILE="$(mktemp "$VARDIR/.restore.XXXXXX")" ||
+    msgError "could not create temporary restore file"
+
+  if ! diffSnapshot "$snap" > "$RESTORE_FILE"; then
+    msgError "could not calculate restore operations"
+  fi
+
+  validateRestorePlan
+  buildInstallOrder
+
+  # Complete calculation and validation before emitting machine-readable output.
+  printDiffJson "$snap"
+
+  rm -f -- "$RESTORE_FILE" "$INSTALL_FILE"
+  RESTORE_FILE=""
+  INSTALL_FILE=""
 }
 
 getSnapshotIndex() {
@@ -748,11 +827,29 @@ main() {
       releaseLock
       ;;
     diff)
-      [ "$#" -ne 2 ] && msgUsage 1
+      [ "$#" -lt 2 ] && msgUsage 1
+      [ "$#" -gt 3 ] && msgUsage 1
+
+      case "${3:-}" in
+        "")
+          diff_mode="human"
+          ;;
+        --json)
+          diff_mode="json"
+          ;;
+        *)
+          msgUsage 1
+          ;;
+      esac
+
       checkUID
       checkVarDir
       acquireLock
-      diffSnapshot "$2"
+      if [ "$diff_mode" = "json" ]; then
+        diffSnapshotJson "$2"
+      else
+        diffSnapshot "$2"
+      fi
       releaseLock
       ;;
     show)
