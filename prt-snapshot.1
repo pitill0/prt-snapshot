@@ -1,4 +1,4 @@
-.TH PRT-SNAPSHOT 1 "August 2026" "prt-snapshot 0.5" "User Commands"
+.TH PRT-SNAPSHOT 1 "September 2026" "prt-snapshot 0.6.0" "User Commands"
 
 .SH NAME
 prt-snapshot \- manage snapshots of the package set installed by prt-get
@@ -178,6 +178,14 @@ timestamp, stored message, and package list. On success, stdout contains only
 the JSON document. Diagnostics are written to stderr, and failures do not emit
 partial JSON to stdout.
 
+.SH MACHINE-READABLE COMPATIBILITY
+All JSON documents currently use schema 1. Within schema 1, existing fields keep
+their meaning and semantically relevant array ordering is part of the contract,
+including dependency-aware
+.B install
+order. Compatible fields may be added, and consumers should ignore unknown
+fields. Incompatible changes require a new schema number.
+
 .SH SAFETY
 Operational commands require root.
 
@@ -201,6 +209,12 @@ adds explicit restore preview and confirmation, orders target packages using
 filtered
 .B quickdep
 results, and prevents dependency discovery from expanding snapshot membership.
+
+.PP
+Version 0.6 adds schema 1 JSON output for snapshot inspection, listing,
+comparison, and restore preview. Machine-readable restore plans preserve the same
+dependency-aware installation ordering as applied restore, and failures are
+validated before JSON output is emitted.
 
 .SH FILES
 

@@ -450,7 +450,7 @@ test_help_and_version_without_store() {
   if run_prt help >"$TEST_ROOT/help.out" 2>"$TEST_ROOT/help.err" &&
      run_prt version >"$TEST_ROOT/version.out" 2>"$TEST_ROOT/version.err" &&
      grep -Fq 'Usage:' "$TEST_ROOT/help.out" &&
-     grep -Fq 'v0.5' "$TEST_ROOT/version.out"; then
+     grep -Fq 'prt-snapshot v0.6.0' "$TEST_ROOT/version.out"; then
     pass "help and version do not require an initialized snapshot store"
   else
     fail "help and version do not require an initialized snapshot store"
@@ -932,7 +932,55 @@ test_restore_human_dry_run_unchanged() {
   fi
 }
 
-say "1..39"
+# 40. show --json must fail cleanly if snapshot timestamp lookup fails.
+test_show_json_timestamp_failure_has_clean_stdout() {
+  new_sandbox
+  printf 'alpha\n' > "$TEST_ROOT/store/9.snap"
+  printf 'message\n' > "$TEST_ROOT/store/9.msg"
+
+  cat > "$TEST_ROOT/bin/stat" <<EOF
+#!/bin/bash
+if [ "\${@: -1}" = "$TEST_ROOT/store/9.snap" ]; then
+  exit 71
+fi
+exec /usr/bin/stat "\$@"
+EOF
+  chmod 0755 "$TEST_ROOT/bin/stat"
+
+  if ! run_prt show 9 --json >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     [ ! -s "$TEST_ROOT/out" ] &&
+     grep -Fq 'could not determine snapshot timestamp' "$TEST_ROOT/err"; then
+    pass "show --json keeps stdout empty when timestamp lookup fails"
+  else
+    fail "show --json keeps stdout empty when timestamp lookup fails"
+  fi
+}
+
+# 41. show --json must fail cleanly if the stored message cannot be read.
+test_show_json_message_failure_has_clean_stdout() {
+  new_sandbox
+  printf 'alpha\n' > "$TEST_ROOT/store/10.snap"
+  printf 'message\n' > "$TEST_ROOT/store/10.msg"
+
+  cat > "$TEST_ROOT/bin/cat" <<EOF
+#!/bin/bash
+if [ "\${@: -1}" = "$TEST_ROOT/store/10.msg" ]; then
+  exit 72
+fi
+exec /usr/bin/cat "\$@"
+EOF
+  chmod 0755 "$TEST_ROOT/bin/cat"
+
+  if ! run_prt show 10 --json >"$TEST_ROOT/out" 2>"$TEST_ROOT/err" &&
+     [ ! -s "$TEST_ROOT/out" ] &&
+     grep -Fq 'could not read snapshot message' "$TEST_ROOT/err"; then
+    pass "show --json keeps stdout empty when message reading fails"
+  else
+    fail "show --json keeps stdout empty when message reading fails"
+  fi
+}
+
+say "1..41"
 test_gap_does_not_overwrite
 test_invalid_snapshot_id
 test_invalid_port_name
@@ -972,6 +1020,8 @@ test_restore_dry_run_json_matches_diff_json
 test_restore_dry_run_json_quickdep_failure_has_clean_stdout
 test_restore_json_requires_dry_run
 test_restore_human_dry_run_unchanged
+test_show_json_timestamp_failure_has_clean_stdout
+test_show_json_message_failure_has_clean_stdout
 
 say ""
 say "$PASS passed, $FAIL failed"
