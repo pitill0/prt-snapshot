@@ -487,10 +487,10 @@ jsonEscape() {
 
     case "$char" in
       '"')
-        printf '\\"'
+        printf '%s' '\"'
         ;;
-      \\)
-        printf '\\\\'
+      '\')
+        printf '%s' '\\'
         ;;
       *)
         printf -v code '%d' "'$char"
